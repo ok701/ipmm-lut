@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>IPMM LUT Tool</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+/* ── Theme tokens ─────────────────────────────────── */
+:root {
+  --bg0:      #0d1117;
+  --bg1:      #161b22;
+  --bg2:      #21262d;
+  --border:   #21262d;
+  --border2:  #30363d;
+  --text:     #e6edf3;
+  --text2:    #c9d1d9;
+  --muted:    #7d8590;
+  --accent:   #3b82f6;
+  --accent2:  #60a5fa;
+  --plot-bg:  #0d1117;
+  --plot-p:   #161b22;
+  --plot-grid:#21262d;
+  --plot-zero:#30363d;
+  --input-bg: #0d1117;
+  --btn-grad: linear-gradient(135deg,#1d4ed8,#7c3aed);
+  --header-grad: linear-gradient(135deg,#1a2744 0%,#0d1b36 100%);
+}
+body.light {
+  --bg0:      #f6f8fa;
+  --bg1:      #ffffff;
+  --bg2:      #eaeef2;
+  --border:   #d0d7de;
+  --border2:  #b0b8c3;
+  --text:     #24292f;
+  --text2:    #24292f;
+  --muted:    #57606a;
+  --accent:   #0969da;
+  --accent2:  #0860ca;
+  --plot-bg:  #f6f8fa;
+  --plot-p:   #ffffff;
+  --plot-grid:#e1e4e8;
+  --plot-zero:#cdd0d4;
+  --input-bg: #ffffff;
+  --btn-grad: linear-gradient(135deg,#0969da,#5e35b1);
+  --header-grad: linear-gradient(135deg,#dde4ed 0%,#c8d8ef 100%);
+}
+
+/* ── Reset ── */
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',sans-serif;background:var(--bg0);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;transition:background .25s,color .25s}
+
+/* ── Header ── */
+header{background:var(--header-grad);padding:10px 20px;display:flex;align-items:center;gap:14px;border-bottom:1px solid var(--border);flex-shrink:0;transition:background .25s}
+header .logo{width:32px;height:32px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0}
+header h1{font-size:16px;font-weight:600;color:var(--text)}
+header .badge{font-size:11px;background:var(--bg2);color:var(--muted);padding:2px 8px;border-radius:20px;border:1px solid var(--border2)}
+header .spacer{flex:1}
+.theme-btn{background:var(--bg2);border:1px solid var(--border2);border-radius:20px;color:var(--text2);padding:5px 14px;font-size:12px;font-family:'Inter',sans-serif;cursor:pointer;transition:background .2s,color .2s;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.theme-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ── App layout ── */
+.app{display:flex;flex:1;overflow:hidden;margin:2vh auto;max-width:1400px;width:calc(100% - 40px);max-height:850px;border-radius:10px;border:1px solid var(--border);box-shadow:0 10px 30px rgba(0,0,0,0.12);background:var(--bg1)}
+
+/* ── Left panel ── */
+.left-panel{width:260px;flex-shrink:0;background:var(--bg1);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow-y:auto;transition:background .25s,border-color .25s}
+.panel-header{padding:14px 16px 10px;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;border-bottom:1px solid var(--border)}
+
+.param-group{padding:12px 16px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--border)}
+.param-row{display:flex;flex-direction:column;gap:3px}
+.param-row label{font-size:11px;color:var(--muted);font-weight:500}
+.param-row input{background:var(--input-bg);border:1px solid var(--border2);border-radius:6px;color:var(--text2);font-size:12px;padding:5px 8px;width:100%;transition:border-color .15s,background .25s}
+.param-row input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)}
+
+.desc-box{margin:0 16px 12px;background:var(--bg0);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:11px;color:var(--muted);min-height:52px;line-height:1.5;transition:border-color .15s,background .25s}
+.desc-box.active{border-color:var(--accent);color:var(--text2)}
+
+.btn-compute{margin:12px 16px;padding:10px;background:var(--btn-grad);color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .2s,transform .1s;width:calc(100% - 32px)}
+.btn-compute:hover:not(:disabled){opacity:.9;transform:translateY(-1px)}
+.btn-compute:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+.spinner{display:none;margin:8px auto;width:20px;height:20px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.status-text{text-align:center;font-size:11px;color:var(--accent);padding:2px 0 8px;min-height:20px}
+
+.const-toggle{display:flex;align-items:center;gap:8px;padding:0 16px 12px;font-size:12px;color:var(--text2);cursor:pointer}
+.const-toggle input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;cursor:pointer}
+
+.results{padding:12px 16px;display:flex;flex-direction:column;gap:6px}
+.results-title{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.result-row{display:flex;justify-content:space-between;align-items:center;font-size:12px}
+.result-row .key{color:var(--muted)}
+.result-row .val{color:var(--accent);font-family:'Inter',monospace;font-weight:600}
+
+/* ── Right panel ── */
+.right-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg0);transition:background .25s}
+
+.tab-bar{display:flex;background:var(--bg1);border-bottom:1px solid var(--border);padding:0 16px;flex-shrink:0;transition:background .25s}
+.tab{padding:10px 18px;font-size:12px;font-weight:500;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;user-select:none}
+.tab:hover{color:var(--text2)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.tab.disabled{opacity:.4;cursor:not-allowed}
+
+.tab-content{flex:1;display:none;overflow:hidden;min-height:0}
+.tab-content.active{display:flex;flex-direction:column}
+/* All chart divs fill their container completely */
+.chart-wrap{flex:1;overflow:hidden;min-height:0;min-width:0}
+#chart-tmax,#chart-lut-id,#chart-lut-iq,#chart-sim{width:100%;height:100%}
+
+.sim-layout{display:flex;flex:1;overflow:hidden;min-height:0}
+.sim-controls{width:200px;flex-shrink:0;background:var(--bg1);border-right:1px solid var(--border);padding:14px;display:flex;flex-direction:column;gap:14px;overflow-y:auto;transition:background .25s}
+.sim-ctrl-group{display:flex;flex-direction:column;gap:6px}
+.sim-ctrl-group label{font-size:11px;color:var(--muted);font-weight:500}
+.sim-ctrl-group .val-label{font-size:13px;font-weight:600;color:var(--accent);text-align:center}
+.sim-ctrl-group input[type=range]{width:100%;accent-color:var(--accent)}
+
+.lut-layout{display:flex;flex:1;overflow:hidden;min-height:0}
+#chart-lut-id,#chart-lut-iq{flex:1;height:100%}
+</style>
+</head>
+<body class="light">
+
+<header>
+  <div class="logo">⚡</div>
+  <h1>IPMM LUT Tool</h1>
+  <span class="badge">FastAPI</span>
+  <div class="spacer"></div>
+  <button class="theme-btn" id="theme-toggle" onclick="toggleTheme()">
+    <span id="theme-icon">☀️</span>
+    <span id="theme-label">라이트 모드</span>
+  </button>
+</header>
+
+<div class="app">
+  <!-- Left Panel -->
+  <div class="left-panel">
+    <div class="panel-header">모터 파라미터</div>
+
+    <div class="param-group">
+      <div class="param-row">
+        <label>Vdc [V]</label>
+        <input id="p_vdc" type="number" value="48" step="1"
+               data-desc="Vdc [V] — 직류 링크(배터리) 전압"/>
+      </div>
+      <div class="param-row">
+        <label>Imax [A]</label>
+        <input id="p_imax" type="number" value="20" step="0.5"
+               data-desc="Imax [A] — 최대 허용 상전류. id-iq 평면의 전류 제한원 반지름"/>
+      </div>
+      <div class="param-row">
+        <label>ψf [Wb]</label>
+        <input id="p_psif" type="number" value="0.01" step="0.001"
+               data-desc="ψf [Wb] — 영구자석이 만드는 자속 (PM flux linkage)"/>
+      </div>
+      <div class="param-row">
+        <label>Ld [H]</label>
+        <input id="p_ld" type="number" value="0.004" step="0.001"
+               data-desc="Ld [H] — d축 인덕턴스 (자속 방향, 약계자에 관련)"/>
+      </div>
+      <div class="param-row">
+        <label>Lq [H]</label>
+        <input id="p_lq" type="number" value="0.008" step="0.001"
+               data-desc="Lq [H] — q축 인덕턴스 (토크 방향, SPM이면 Ld=Lq)"/>
+      </div>
+      <div class="param-row">
+        <label>극쌍수</label>
+        <input id="p_pp" type="number" value="4" step="1" min="1"
+               data-desc="극쌍수 — 모터 극쌍수. 전기적 속도 = 극쌍수 × 기계적 속도"/>
+      </div>
+      <div class="param-row">
+        <label>α (Vmax/Vdc)</label>
+        <input id="p_alpha" type="number" value="0.333" step="0.01"
+               data-desc="α — 인버터 출력 전압 이용률. 공간벡터 변조 시 1/√3 ≈ 0.577"/>
+      </div>
+    </div>
+
+    <div class="desc-box" id="desc-box">파라미터를 클릭하면 설명이 나타납니다.</div>
+
+    <label class="const-toggle">
+      <input type="checkbox" id="chk-const-torque" checked/>
+      동토크 제어
+    </label>
+
+    <button class="btn-compute" id="btn-compute" onclick="onCompute()">⚡ LUT 생성</button>
+    <div class="spinner" id="spinner"></div>
+    <div class="status-text" id="status-text"></div>
+
+    <div class="results" id="results" style="display:none">
+      <div class="results-title">동작점 결과</div>
+      <div class="result-row"><span class="key">id* [A]</span><span class="val" id="r_id">—</span></div>
+      <div class="result-row"><span class="key">iq* [A]</span><span class="val" id="r_iq">—</span></div>
+      <div class="result-row"><span class="key">Te [Nm]</span><span class="val" id="r_te">—</span></div>
+      <div class="result-row"><span class="key">λ_max [Wb]</span><span class="val" id="r_lam">—</span></div>
+      <div class="result-row"><span class="key">Tmax [Nm]</span><span class="val" id="r_tmax">—</span></div>
+    </div>
+  </div>
+
+  <!-- Right panel -->
+  <div class="right-panel">
+    <div class="tab-bar">
+      <div class="tab active"  id="tab-tmax" onclick="switchTab('tmax')">최대토크 / 출력</div>
+      <div class="tab disabled" id="tab-lut"  onclick="switchTab('lut')">LUT 3D</div>
+      <div class="tab disabled" id="tab-sim"  onclick="switchTab('sim')">시뮬레이션</div>
+    </div>
+
+    <!-- Tab: 최대토크 / 출력 -->
+    <div class="tab-content active" id="content-tmax">
+      <div class="chart-wrap"><div id="chart-tmax"></div></div>
+    </div>
+
+    <!-- Tab: LUT 3D -->
+    <div class="tab-content" id="content-lut">
+      <div class="lut-layout">
+        <div id="chart-lut-id"></div>
+        <div id="chart-lut-iq"></div>
+      </div>
+    </div>
+
+    <!-- Tab: 시뮬레이션 -->
+    <div class="tab-content" id="content-sim">
+      <div class="sim-layout">
+        <div class="sim-controls">
+          <div class="sim-ctrl-group">
+            <label>회전수 [rpm]</label>
+            <div class="val-label" id="lbl-rpm">3000 rpm</div>
+            <input type="range" id="sl-rpm" min="100" max="6000" value="3000" step="50"
+                   oninput="onSimChange()"/>
+          </div>
+          <div class="sim-ctrl-group">
+            <label>토크 지령 [Nm]</label>
+            <div class="val-label" id="lbl-tref">2.0 Nm</div>
+            <input type="range" id="sl-tref" min="0" max="500" value="20" step="1"
+                   oninput="onSimChange()"/>
+          </div>
+        </div>
+        <div class="chart-wrap"><div id="chart-sim"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Theme ────────────────────────────────────────────────────────────────────
+let isLight = true;
+
+function toggleTheme() {
+  isLight = !isLight;
+  document.body.classList.toggle('light', isLight);
+  document.getElementById('theme-icon').textContent  = isLight ? '🌙' : '☀️';
+  document.getElementById('theme-label').textContent = isLight ? '다크 모드' : '라이트 모드';
+  if (lutData) reRenderAll();
+}
+
+function css(varName) {
+  return getComputedStyle(document.body).getPropertyValue(varName).trim();
+}
+
+function getPlotLayout(extra) {
+  const base = {
+    paper_bgcolor: css('--plot-bg'),
+    plot_bgcolor:  css('--plot-p'),
+    font: {color: css('--text2'), family:'Inter, sans-serif', size:11},
+    xaxis: {gridcolor:css('--plot-grid'), zerolinecolor:css('--plot-zero'), ...(extra.xaxis||{})},
+    yaxis: {gridcolor:css('--plot-grid'), zerolinecolor:css('--plot-zero'), ...(extra.yaxis||{})},
+    margin: {l:50, r:20, t:40, b:45},
+  };
+  return {...base, ...extra};
+}
+
+// ── Global state ──────────────────────────────────────────────────────────────
+let lutData   = null;
+let simBg     = null;
+let currentTab = 'tmax';
+
+// ── Param descriptions ────────────────────────────────────────────────────────
+document.querySelectorAll('[data-desc]').forEach(el => {
+  el.addEventListener('focus', () => {
+    const box = document.getElementById('desc-box');
+    box.textContent = el.dataset.desc;
+    box.classList.add('active');
+  });
+  el.addEventListener('blur', () => {
+    document.getElementById('desc-box').classList.remove('active');
+  });
+});
+
+document.getElementById('chk-const-torque').addEventListener('change', () => {
+  if (lutData) { onSimChange(); updateLutTab(); }
+});
+
+// ── Tab helpers ───────────────────────────────────────────────────────────────
+function resizeAllCharts() {
+  ['chart-tmax','chart-lut-id','chart-lut-iq','chart-sim'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el._fullLayout) Plotly.Plots.resize(el);
+  });
+}
+
+function switchTab(name) {
+  if (document.getElementById('tab-' + name).classList.contains('disabled')) return;
+  currentTab = name;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.getElementById('content-' + name).classList.add('active');
+  // Let the browser paint the newly visible container, then resize
+  requestAnimationFrame(() => requestAnimationFrame(resizeAllCharts));
+}
+
+function enableTabs() {
+  ['tab-lut','tab-sim'].forEach(id => document.getElementById(id).classList.remove('disabled'));
+}
+
+function reRenderAll() {
+  renderTmax(lutData);
+  updateLutTab();
+  onSimChange();
+}
+
+// ── Compute LUT ───────────────────────────────────────────────────────────────
+async function onCompute() {
+  const btn = document.getElementById('btn-compute');
+  btn.disabled = true;
+  document.getElementById('spinner').style.display = 'block';
+  document.getElementById('status-text').textContent = '계산 중…';
+
+  const payload = getMotorParams();
+
+  try {
+    const res = await fetch('/api/compute-lut', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    lutData = data;
+    simBg   = data.sim_bg;
+
+    renderTmax(data);
+    updateLutTab();
+    initSimBg();
+    onSimChange();
+    enableTabs();
+    document.getElementById('results').style.display = 'flex';
+    document.getElementById('status-text').textContent = '✔ 완료';
+  } catch(e) {
+    document.getElementById('status-text').textContent = '⚠ 오류: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    document.getElementById('spinner').style.display = 'none';
+  }
+}
+
+// ── Tmax / Power chart (RPM x-axis, dual y-axis) ──────────────────────────────
+function renderTmax(d) {
+  const accentClr = isLight ? '#0969da' : '#3b82f6';
+  const powerClr  = isLight ? '#d97706' : '#f59e0b';
+
+  const traceTmax = {
+    x: d.rpm_sweep,
+    y: d.tmax_vs_rpm,
+    mode: 'lines',
+    name: 'Tmax [Nm]',
+    yaxis: 'y',
+    line: {color: accentClr, width: 2.5},
+    hovertemplate: '%{x:.0f} rpm<br>Tmax: %{y:.3f} Nm<extra></extra>',
+  };
+
+  const tracePower = {
+    x: d.rpm_sweep,
+    y: d.power_vs_rpm_kw,
+    mode: 'lines',
+    name: 'Power [kW]',
+    yaxis: 'y2',
+    line: {color: powerClr, width: 2, dash: 'dot'},
+    hovertemplate: '%{x:.0f} rpm<br>Power: %{y:.2f} kW<extra></extra>',
+  };
+
+  const layout = getPlotLayout({
+    title: {text: '최대 토크 & 출력 vs 속도', font:{size:13}},
+    xaxis: {title: '속도 [rpm]', gridcolor: css('--plot-grid'), zerolinecolor: css('--plot-zero')},
+    yaxis: {
+      title: 'Tmax [Nm]',
+      titlefont: {color: accentClr},
+      tickfont:  {color: accentClr},
+      gridcolor: css('--plot-grid'),
+      rangemode: 'tozero'
+    },
+    yaxis2: {
+      title: 'Power [kW]',
+      titlefont: {color: powerClr},
+      tickfont:  {color: powerClr},
+      overlaying: 'y',
+      side: 'right',
+      showgrid: false,
+      rangemode: 'tozero'
+    },
+    legend: {x:.01, y:.99, bgcolor: isLight ? 'rgba(255,255,255,.8)' : 'rgba(13,17,23,.7)',
+             bordercolor: css('--border'), borderwidth:1, font:{size:10}},
+    margin: {l:55, r:65, t:45, b:50},
+  });
+
+  Plotly.newPlot('chart-tmax', [traceTmax, tracePower], layout, {responsive:true, displayModeBar:false});
+}
+
+// ── LUT tab ───────────────────────────────────────────────────────────────────
+function updateLutTab() {
+  const isConst = document.getElementById('chk-const-torque').checked;
+  if (isConst) renderLut3D(lutData);
+  else         renderTrajectory3D(lutData);
+}
+
+function scene3d() {
+  return {
+    bgcolor: css('--plot-bg'),
+    xaxis: {gridcolor: css('--plot-grid'), color: css('--muted')},
+    yaxis: {gridcolor: css('--plot-grid'), color: css('--muted')},
+    zaxis: {gridcolor: css('--plot-grid'), color: css('--muted')},
+  };
+}
+
+function renderLut3D(d) {
+  const base = (title) => ({...getPlotLayout({title:{text:title,font:{size:12}}}),
+    scene: {...scene3d(), xaxis:{...scene3d().xaxis,title:'T_ratio'}, yaxis:{...scene3d().yaxis,title:'λ_max [Wb]'}},
+    margin:{l:0,r:0,t:30,b:0}});
+
+  Plotly.newPlot('chart-lut-id', [{type:'surface', x:d.Tratio_grid, y:d.lam_grid, z:d.Id_LUT_2D,
+    colorscale:'RdBu', opacity:.92, showscale:true,
+    colorbar:{len:.6,thickness:12,title:{text:'Id [A]',side:'right'}}}],
+    base('Id LUT [A]'), {responsive:true, displayModeBar:false});
+
+  Plotly.newPlot('chart-lut-iq', [{type:'surface', x:d.Tratio_grid, y:d.lam_grid, z:d.Iq_LUT_2D,
+    colorscale:'Viridis', opacity:.92, showscale:true,
+    colorbar:{len:.6,thickness:12,title:{text:'Iq [A]',side:'right'}}}],
+    base('Iq LUT [A]'), {responsive:true, displayModeBar:false});
+}
+
+function renderTrajectory3D(d) {
+  const v = d.Id_at_Tmax.map((v,i) => v!=null && d.Iq_at_Tmax[i]!=null);
+  const lam_v = d.lam_grid.filter((_,i)=>v[i]);
+  const id_v  = d.Id_at_Tmax.filter((_,i)=>v[i]);
+  const iq_v  = d.Iq_at_Tmax.filter((_,i)=>v[i]);
+  const t_fake = [0,.33,.66,1.0];
+  const Id_surf = lam_v.map((_,i) => t_fake.map(() => id_v[i]));
+  const Iq_surf = lam_v.map((_,i) => t_fake.map(() => iq_v[i]));
+
+  const base = (title) => ({...getPlotLayout({title:{text:title,font:{size:12}}}),
+    scene:{...scene3d(), xaxis:{...scene3d().xaxis,title:'(T_ratio)'}, yaxis:{...scene3d().yaxis,title:'λ_max [Wb]'}},
+    margin:{l:0,r:0,t:30,b:0}});
+
+  Plotly.newPlot('chart-lut-id', [{type:'surface',x:t_fake,y:lam_v,z:Id_surf,colorscale:'RdBu',opacity:.92,showscale:false}],
+    base('Id at Tmax [A] (MTPV)'), {responsive:true, displayModeBar:false});
+  Plotly.newPlot('chart-lut-iq', [{type:'surface',x:t_fake,y:lam_v,z:Iq_surf,colorscale:'Viridis',opacity:.92,showscale:false}],
+    base('Iq at Tmax [A] (MTPV)'), {responsive:true, displayModeBar:false});
+}
+
+// ── Simulation ────────────────────────────────────────────────────────────────
+function initSimBg() { /* trigger full redraw on next onSimChange */ }
+
+async function onSimChange() {
+  if (!lutData) return;
+
+  const rpm  = parseFloat(document.getElementById('sl-rpm').value);
+  const tref = parseFloat(document.getElementById('sl-tref').value) * 0.1;
+  const isConst = document.getElementById('chk-const-torque').checked;
+
+  document.getElementById('lbl-rpm').textContent  = `${rpm} rpm`;
+  document.getElementById('lbl-tref').textContent = `${tref.toFixed(1)} Nm`;
+
+  const payload = {...getMotorParams(), ...lutData, rpm, tref, const_torque: isConst};
+
+  try {
+    const res = await fetch('/api/simulate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return;
+    const d = await res.json();
+    updateSimChart(d, isConst);
+    document.getElementById('r_id').textContent   = d.id_op.toFixed(3) + ' A';
+    document.getElementById('r_iq').textContent   = d.iq_op.toFixed(3) + ' A';
+    document.getElementById('r_te').textContent   = d.te_op.toFixed(3) + ' Nm';
+    document.getElementById('r_lam').textContent  = d.lam_ref.toFixed(5) + ' Wb';
+    document.getElementById('r_tmax').textContent = d.tmax_at_lam.toFixed(3) + ' Nm';
+  } catch(e) { /* ignore */ }
+}
+
+function updateSimChart(d, isConst) {
+  const bg   = simBg;
+  const Imax = parseFloat(document.getElementById('p_imax').value);
+  const accentClr  = isLight ? '#0969da' : '#3b82f6';
+  const voltClr    = isLight ? '#059669' : '#10b981';
+  const mtpaClr    = isLight ? '#b45309' : '#fbbf24';
+  const trajClr    = isLight ? '#7c3aed' : '#c084fc';
+  const trefClr    = isLight ? '#dc2626' : '#f87171';
+  const tactualClr = isLight ? '#c2410c' : '#fb923c';
+  const opClr      = isLight ? '#dc2626' : '#ef4444';
+  const legBg      = isLight ? 'rgba(255,255,255,.8)' : 'rgba(13,17,23,.7)';
+
+  const traces = [];
+
+  traces.push({
+    type:'contour', x:bg.id_vec, y:bg.iq_vec, z:bg.I_bg,
+    contours:{type:'constraint',operation:'<=',value:Imax},
+    fillcolor: isLight ? 'rgba(9,105,218,.10)' : 'rgba(59,130,246,.12)',
+    line:{color:accentClr,width:1.8},
+    showscale:false, name:'I limit', hoverinfo:'skip',
+  });
+
+  traces.push({
+    type:'contour', x:bg.id_vec, y:bg.iq_vec, z:bg.LAM_bg,
+    contours:{type:'constraint',operation:'<=',value:d.lam_ref},
+    fillcolor: isLight ? 'rgba(5,150,105,.10)' : 'rgba(52,211,153,.15)',
+    line:{color:voltClr,width:1.8},
+    showscale:false, name:'V limit', hoverinfo:'skip',
+  });
+
+  if (d.tref_cmd > 0) {
+    traces.push({
+      type:'contour', x:bg.id_vec, y:bg.iq_vec, z:bg.TE_bg,
+      contours:{type:'constraint',operation:'=',value:d.tref_cmd},
+      line:{color:trefClr,width:1.5,dash:'dash'},
+      showscale:false, name:`Tref_cmd=${d.tref_cmd.toFixed(1)} Nm`, hoverinfo:'skip',
+    });
+  }
+  if (d.tref_actual > 0) {
+    traces.push({
+      type:'contour', x:bg.id_vec, y:bg.iq_vec, z:bg.TE_bg,
+      contours:{type:'constraint',operation:'=',value:d.tref_actual},
+      line:{color:tactualClr,width:2.5},
+      showscale:false, name:`Tref=${d.tref_actual.toFixed(1)} Nm`, hoverinfo:'skip',
+    });
+  }
+
+  traces.push({
+    type:'scatter', x:bg.id_mtpa, y:bg.iq_mtpa,
+    mode:'lines', line:{color:mtpaClr,width:2}, name:'MTPA',
+  });
+
+  const v = lutData.Id_at_Tmax.map((v,i)=>v!=null&&lutData.Iq_at_Tmax[i]!=null);
+  traces.push({
+    type:'scatter',
+    x:lutData.Id_at_Tmax.filter((_,i)=>v[i]),
+    y:lutData.Iq_at_Tmax.filter((_,i)=>v[i]),
+    mode:'lines', line:{color:trajClr,width:2}, name:'Optimal traj.',
+  });
+
+  traces.push({
+    type:'scatter', x:[d.id_op], y:[d.iq_op],
+    mode:'markers',
+    marker:{color:opClr,size:12,line:{color: isLight?'#991b1b':'#7f1d1d',width:2}},
+    name:'동작점',
+  });
+
+  const layout = getPlotLayout({
+    title:{text:'동작점 & 전류/전압 제한', font:{size:13}},
+    xaxis:{title:'id [A]', range:[bg.id_vec[0],bg.id_vec[bg.id_vec.length-1]], scaleanchor:'y', scaleratio:1},
+    yaxis:{title:'iq [A]', range:[bg.iq_vec[0],bg.iq_vec[bg.iq_vec.length-1]]},
+    legend:{x:.01,y:.99,bgcolor:legBg,bordercolor:css('--border'),borderwidth:1,font:{size:10}},
+  });
+
+  Plotly.newPlot('chart-sim', traces, layout, {responsive:true, displayModeBar:false});
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function getMotorParams() {
+  return {
+    pole_pairs: parseInt(document.getElementById('p_pp').value),
+    Ld:    parseFloat(document.getElementById('p_ld').value),
+    Lq:    parseFloat(document.getElementById('p_lq').value),
+    psi_f: parseFloat(document.getElementById('p_psif').value),
+    Imax:  parseFloat(document.getElementById('p_imax').value),
+    alpha: parseFloat(document.getElementById('p_alpha').value),
+    Vdc:   parseFloat(document.getElementById('p_vdc').value),
+  };
+}
+
+// ── Initial placeholder charts ────────────────────────────────────────────────
+const PLOTLY_CFG = {responsive:true, displayModeBar:false};
+(function initEmpty() {
+  const ph = (title) => ({
+    ...getPlotLayout({title:{text:title,font:{size:13}}, autosize:true}),
+    annotations:[{
+      text:'LUT 생성 버튼을 눌러 계산을 시작하세요',
+      xref:'paper',yref:'paper',x:.5,y:.5,
+      showarrow:false,font:{size:14,color:css('--muted')},
+    }],
+  });
+  Plotly.newPlot('chart-tmax', [], ph('최대 토크 & 출력 vs 속도'), PLOTLY_CFG);
+  Plotly.newPlot('chart-lut-id', [], getPlotLayout({title:{text:'Id LUT',font:{size:12}},autosize:true,scene:{bgcolor:css('--plot-bg')},margin:{l:0,r:0,t:30,b:0}}), PLOTLY_CFG);
+  Plotly.newPlot('chart-lut-iq', [], getPlotLayout({title:{text:'Iq LUT',font:{size:12}},autosize:true,scene:{bgcolor:css('--plot-bg')},margin:{l:0,r:0,t:30,b:0}}), PLOTLY_CFG);
+  Plotly.newPlot('chart-sim',   [], ph('시뮬레이션 동작점'), PLOTLY_CFG);
+})();
+
+// Resize all charts whenever the right panel changes size
+new ResizeObserver(() => resizeAllCharts()).observe(document.querySelector('.right-panel'));
+</script>
+</body>
+</html>
