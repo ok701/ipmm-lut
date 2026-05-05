@@ -181,9 +181,15 @@ class LutWorker(QThread):
         total_steps = N_lam + N_lam * N_tref  # phase1: N_lam, phase2: N_lam*N_tref
         done = 0
 
+        Vmax = p["alpha"] * p["Vdc"]
+        omega_max = p["rpm_max"] * 2 * np.pi / 60.0
+        lam_min_req = Vmax / (max(omega_max, 1.0) * p["pole_pairs"])
+
         lam_upper = np.hypot(p["psi_f"] + p["Ld"] * p["Imax"],
                              p["Lq"] * p["Imax"]) * 1.05
-        lam_lower = lam_upper * 0.03
+        # Set lam_lower to match rpm_max, with a safety floor
+        lam_lower = max(lam_min_req * 0.98, lam_upper * 0.01)
+        
         lam_grid = np.linspace(lam_lower, lam_upper, N_lam)
         Tratio_grid = np.linspace(0.0, 0.999, N_tref)
 
@@ -344,8 +350,8 @@ class TabOverlay(QWidget):
 
     def show_idle(self):
         self.icon_lbl.setText("⚙")
-        self.label.setText("모터 파라미터를 입력하고\nLUT 생성을 눌러주세요")
-        self.sub_lbl.setText("왼쪽 패널에서 모터 사양을 입력한 후 [ LUT 생성 ] 버튼을 눌러주세요")
+        self.label.setText("모터 파라미터를 입력하고 LUT 생성을 눌러주세요")
+        self.sub_lbl.setText("파라미터에 대한 설명은 아래에서 확인하실 수 있습니다.")
         self.prog_container.setVisible(False)
         self.show()
         self.raise_()
@@ -522,17 +528,12 @@ class TmaxTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # X-axis selection
-        ctrl_layout = QHBoxLayout()
-        ctrl_layout.setContentsMargins(10, 5, 10, 0)
-        self.combo_x = QComboBox()
-        self.combo_x.addItems(["Flux Linkage [Wb]", "Speed [rpm]"])
-        self.combo_x.currentIndexChanged.connect(self._redraw)
-        ctrl_layout.addWidget(QLabel("X-축 선택:"))
-        ctrl_layout.addWidget(self.combo_x)
-        ctrl_layout.addStretch()
+        self.mode = "Flux Linkage [Wb]"
 
         # Help button
+        ctrl_layout = QHBoxLayout()
+        ctrl_layout.setContentsMargins(10, 5, 10, 0)
+        ctrl_layout.addStretch()
         btn_help = QPushButton("❓ 수식 설명")
         btn_help.setFixedHeight(_S(26))
         btn_help.setStyleSheet(
@@ -542,7 +543,6 @@ class TmaxTab(QWidget):
         )
         btn_help.clicked.connect(self._show_help)
         ctrl_layout.addWidget(btn_help)
-
         layout.addLayout(ctrl_layout)
 
         fig = Figure(constrained_layout=True)
@@ -563,6 +563,10 @@ class TmaxTab(QWidget):
         self.Vdc = Vdc
         self._redraw()
 
+    def set_xaxis_mode(self, mode):
+        self.mode = mode
+        self._redraw()
+
     def _redraw(self):
         if self.lam_grid is None or self.Tmax_LUT is None:
             return
@@ -579,8 +583,7 @@ class TmaxTab(QWidget):
         power_w = self.Tmax_LUT * omega_mech
         power_kw = power_w / 1000.0
 
-        mode = self.combo_x.currentText()
-        if "Speed" in mode and self.p_ is not None and self.Vdc is not None:
+        if "Speed" in self.mode and self.p_ is not None and self.Vdc is not None:
             x_data = (omega_mech * 60.0) / (2.0 * np.pi)
             x_label = "Speed [rpm]"
             title = "Performance vs Speed"
@@ -621,6 +624,10 @@ class LutTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
+        self.mode = "Flux Linkage [Wb]"
+        self.p_ = None
+        self.Vdc = None
+        
         # ---- Control Bar ----
         ctrl_layout = QHBoxLayout()
         ctrl_layout.setContentsMargins(_S(10), _S(5), _S(10), _S(5))
@@ -676,27 +683,53 @@ class LutTab(QWidget):
         self.ax_id = self._fig.add_subplot(121, projection='3d')
         self.ax_iq = self._fig.add_subplot(122, projection='3d')
 
-    def update_plot(self, lam_grid, Tratio_grid, Id_LUT_2D, Iq_LUT_2D):
+    def update_plot(self, lam_grid, Tratio_grid, Id_LUT_2D, Iq_LUT_2D, p_=None, Vdc=None):
         self.lam_grid = lam_grid
         self.Tratio_grid = Tratio_grid
         self.Id_LUT_2D = Id_LUT_2D
         self.Iq_LUT_2D = Iq_LUT_2D
+        if p_ is not None: self.p_ = p_
+        if Vdc is not None: self.Vdc = Vdc
         
         self._redraw_plot()
         self._update_table()
 
+    def set_xaxis_mode(self, mode):
+        self.mode = mode
+        if self.Id_LUT_2D is not None:
+            self._redraw_plot()
+            self._update_table()
+        elif getattr(self, 'Id_at_Tmax', None) is not None:
+            self._redraw_trajectory()
+
     def _redraw_plot(self):
         if self.lam_grid is None: return
         self._init_3d_axes()
-        T, L = np.meshgrid(self.Tratio_grid, self.lam_grid)
-        Id_masked = np.ma.masked_invalid(self.Id_LUT_2D)
-        Iq_masked = np.ma.masked_invalid(self.Iq_LUT_2D)
+        
+        y_label = "lam_max [Wb]"
+        y_data = self.lam_grid
+        Id_data = self.Id_LUT_2D
+        Iq_data = self.Iq_LUT_2D
+        
+        if "Speed" in self.mode and self.p_ is not None and self.Vdc is not None:
+            Vmax = self.p_["alpha"] * self.Vdc
+            pp = self.p_["pole_pairs"]
+            omega_mech = Vmax / (np.maximum(self.lam_grid, 1e-9) * pp)
+            speed_rpm = (omega_mech * 60.0) / (2.0 * np.pi)
+            y_data = speed_rpm[::-1] # Reverse to make it ascending
+            Id_data = Id_data[::-1, :]
+            Iq_data = Iq_data[::-1, :]
+            y_label = "Speed [rpm]"
+            
+        T, L = np.meshgrid(self.Tratio_grid, y_data)
+        Id_masked = np.ma.masked_invalid(Id_data)
+        Iq_masked = np.ma.masked_invalid(Iq_data)
 
         self.ax_id.plot_surface(T, L, Id_masked, cmap='coolwarm',
                                 edgecolor='none', alpha=0.92)
         self.ax_id.set_title("Id LUT [A]", fontsize=9)
         self.ax_id.set_xlabel("T_ratio", fontsize=7, labelpad=2)
-        self.ax_id.set_ylabel("lam_max [Wb]", fontsize=7, labelpad=2)
+        self.ax_id.set_ylabel(y_label, fontsize=7, labelpad=2)
         self.ax_id.set_zlabel("Id [A]", fontsize=7, labelpad=2)
         self.ax_id.tick_params(labelsize=6)
 
@@ -704,7 +737,7 @@ class LutTab(QWidget):
                                 edgecolor='none', alpha=0.92)
         self.ax_iq.set_title("Iq LUT [A]", fontsize=9)
         self.ax_iq.set_xlabel("T_ratio", fontsize=7, labelpad=2)
-        self.ax_iq.set_ylabel("lam_max [Wb]", fontsize=7, labelpad=2)
+        self.ax_iq.set_ylabel(y_label, fontsize=7, labelpad=2)
         self.ax_iq.set_zlabel("Iq [A]", fontsize=7, labelpad=2)
         self.ax_iq.tick_params(labelsize=6)
         self.canvas.draw()
@@ -712,16 +745,27 @@ class LutTab(QWidget):
     def _update_table(self):
         if self.lam_grid is None: return
         
-        # Display as a table: lam_max on vertical, T_ratio on horizontal
-        # We'll show Id and Iq combined or just one? Let's show lam_max, T_ratio, Id, Iq columns for all points
+        y_label = "lam_max [Wb]"
+        y_data = self.lam_grid
+        Id_data = self.Id_LUT_2D
+        Iq_data = self.Iq_LUT_2D
+        
+        if "Speed" in self.mode and self.p_ is not None and self.Vdc is not None:
+            Vmax = self.p_["alpha"] * self.Vdc
+            pp = self.p_["pole_pairs"]
+            omega_mech = Vmax / (np.maximum(self.lam_grid, 1e-9) * pp)
+            y_data = (omega_mech * 60.0) / (2.0 * np.pi)
+            y_label = "Speed [rpm]"
+
+        # We'll show lam_max/Speed, T_ratio, Id, Iq columns
         rows = []
-        for i, lam in enumerate(self.lam_grid):
+        for i, lam in enumerate(y_data):
             for j, ratio in enumerate(self.Tratio_grid):
-                rows.append([lam, ratio, self.Id_LUT_2D[i, j], self.Iq_LUT_2D[i, j]])
+                rows.append([lam, ratio, Id_data[i, j], Iq_data[i, j]])
         
         self.table.setRowCount(len(rows))
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["lam_max [Wb]", "T_ratio", "Id [A]", "Iq [A]"])
+        self.table.setHorizontalHeaderLabels([y_label, "T_ratio", "Id [A]", "Iq [A]"])
         
         for r, data in enumerate(rows):
             for c, val in enumerate(data):
@@ -802,15 +846,36 @@ class LutTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "오류", f"파일 저장 중 오류가 발생했습니다:\n{str(e)}")
 
-    def update_trajectory(self, lam_grid, Id_at_Tmax, Iq_at_Tmax):
+    def update_trajectory(self, lam_grid, Id_at_Tmax, Iq_at_Tmax, p_=None, Vdc=None):
         """MTPA/MTPV mode: show MTPV surface extruded along T_ratio (3D)."""
-        v = np.isfinite(Id_at_Tmax) & np.isfinite(Iq_at_Tmax)
-        lam_v  = lam_grid[v]
-        Id_v   = Id_at_Tmax[v]
-        Iq_v   = Iq_at_Tmax[v]
-        # Extrude 1D trajectory into a surface along a dummy T_ratio axis
+        self.lam_grid = lam_grid
+        self.Id_at_Tmax = Id_at_Tmax
+        self.Iq_at_Tmax = Iq_at_Tmax
+        if p_ is not None: self.p_ = p_
+        if Vdc is not None: self.Vdc = Vdc
+        self._redraw_trajectory()
+
+    def _redraw_trajectory(self):
+        v = np.isfinite(self.Id_at_Tmax) & np.isfinite(self.Iq_at_Tmax)
+        lam_v  = self.lam_grid[v]
+        Id_v   = self.Id_at_Tmax[v]
+        Iq_v   = self.Iq_at_Tmax[v]
+        
+        y_label = "lam_max [Wb]"
+        y_data = lam_v
+        
+        if "Speed" in self.mode and self.p_ is not None and self.Vdc is not None:
+            Vmax = self.p_["alpha"] * self.Vdc
+            pp = self.p_["pole_pairs"]
+            omega_mech = Vmax / (np.maximum(lam_v, 1e-9) * pp)
+            speed_rpm = (omega_mech * 60.0) / (2.0 * np.pi)
+            y_data = speed_rpm[::-1] # Reverse to make it ascending
+            Id_v = Id_v[::-1]
+            Iq_v = Iq_v[::-1]
+            y_label = "Speed [rpm]"
+            
         t_fake = np.linspace(0.0, 1.0, 4)
-        T2d, L2d = np.meshgrid(t_fake, lam_v)
+        T2d, L2d = np.meshgrid(t_fake, y_data)
         Id_surf  = np.tile(Id_v[:, None], (1, 4))
         Iq_surf  = np.tile(Iq_v[:, None], (1, 4))
 
@@ -819,7 +884,7 @@ class LutTab(QWidget):
                                 edgecolor='none', alpha=0.92)
         self.ax_id.set_title("Id at Tmax [A] (MTPV)", fontsize=9)
         self.ax_id.set_xlabel("(T_ratio)", fontsize=7, labelpad=2)
-        self.ax_id.set_ylabel("lam_max [Wb]", fontsize=7, labelpad=2)
+        self.ax_id.set_ylabel(y_label, fontsize=7, labelpad=2)
         self.ax_id.set_zlabel("Id [A]", fontsize=7, labelpad=2)
         self.ax_id.tick_params(labelsize=6)
 
@@ -827,7 +892,7 @@ class LutTab(QWidget):
                                 edgecolor='none', alpha=0.92)
         self.ax_iq.set_title("Iq at Tmax [A] (MTPV)", fontsize=9)
         self.ax_iq.set_xlabel("(T_ratio)", fontsize=7, labelpad=2)
-        self.ax_iq.set_ylabel("lam_max [Wb]", fontsize=7, labelpad=2)
+        self.ax_iq.set_ylabel(y_label, fontsize=7, labelpad=2)
         self.ax_iq.set_zlabel("Iq [A]", fontsize=7, labelpad=2)
         self.ax_iq.tick_params(labelsize=6)
         self.canvas.draw()
@@ -1051,6 +1116,7 @@ class DescLineEdit(QLineEdit):
 class ParamPanel(QWidget):
     rebuild_requested = pyqtSignal(dict, float)
     mode_changed = pyqtSignal()
+    xaxis_changed = pyqtSignal(str)
 
     _DESCS = {
         "vdc":   "Vdc [V] — 직류 링크(배터리) 전압",
@@ -1060,6 +1126,7 @@ class ParamPanel(QWidget):
         "lq":    "Lq [H] — q축 인덕턴스 (토크 방향, SPM 이면 Ld=Lq)",
         "pp":    "극쌍수 — 모터 극쌍수 (pole pairs). 전기적 속도 = 극쌍수 × 기계적 속도",
         "alpha": "α — 인버터 출력 전압 이용률 (Vmax = α × Vdc). 공간벡터 변조 시 1/√3 ≈ 0.577",
+        "rpm_max": "최대 속도 [rpm] — 분석을 수행할 최대 속도 제한치",
         "ct":    "동토크 제어 ON → λ_max × T_ratio 2D LUT로 지령 토크를 정밀 추적\n"
                  "동토크 제어 OFF → λ_max 1D 룩업으로 MTPA/MTPV 최대토크 점만 추적",
     }
@@ -1099,6 +1166,7 @@ class ParamPanel(QWidget):
         self.e_lq    = de(p_init["Lq"],      "lq",   4)
         self.e_pp    = de(p_init["pole_pairs"],"pp",  0)
         self.e_alpha = de(p_init["alpha"],   "alpha",3)
+        self.e_rpmmax = de(p_init.get("rpm_max", 6000.0), "rpm_max", 0)
 
         form.addRow("Vdc [V]",       self.e_vdc)
         form.addRow("Imax [A]",      self.e_imax)
@@ -1107,6 +1175,7 @@ class ParamPanel(QWidget):
         form.addRow("Lq [H]",        self.e_lq)
         form.addRow("극쌍수",         self.e_pp)
         form.addRow("α (Vmax/Vdc)",  self.e_alpha)
+        form.addRow("최대 속도 [rpm]", self.e_rpmmax)
         layout.addLayout(form)
 
         self.btn = QPushButton("LUT 생성")
@@ -1136,6 +1205,15 @@ class ParamPanel(QWidget):
         self.chk_const_torque.stateChanged.connect(self._on_ct_changed)
         layout.addWidget(self.chk_const_torque)
 
+        # X-axis combo
+        self.combo_x = QComboBox()
+        self.combo_x.addItems(["Flux Linkage [Wb]", "Speed [rpm]"])
+        self.combo_x.currentIndexChanged.connect(self._on_xaxis_changed)
+        xl = QHBoxLayout()
+        xl.addWidget(QLabel("X축:"))
+        xl.addWidget(self.combo_x)
+        layout.addLayout(xl)
+
         layout.addStretch()
 
         # Inline description label — pinned to bottom
@@ -1156,6 +1234,12 @@ class ParamPanel(QWidget):
         self._show_desc(self._DESCS["ct"])
         self.mode_changed.emit()
 
+    def _on_xaxis_changed(self):
+        self.xaxis_changed.emit(self.combo_x.currentText())
+
+    def get_xaxis_mode(self):
+        return self.combo_x.currentText()
+
     def is_const_torque(self):
         return self.chk_const_torque.isChecked()
 
@@ -1168,8 +1252,10 @@ class ParamPanel(QWidget):
                 "psi_f":      float(self.e_psif.text()),
                 "Imax":       float(self.e_imax.text()),
                 "alpha":      float(self.e_alpha.text()),
+                "rpm_max":    float(self.e_rpmmax.text()),
             }
             Vdc = float(self.e_vdc.text())
+            p["Vdc"] = Vdc
         except ValueError:
             self.status_lbl.setText("⚠ 잘못된 입력값")
             return
@@ -1192,7 +1278,7 @@ class MainWindow(QMainWindow):
         self.resize(_S(1200), _S(740))
 
         self.p_  = {"pole_pairs": 4, "Ld": 0.004, "Lq": 0.008,
-                    "psi_f": 0.01, "Imax": 20.0, "alpha": 1/3}
+                    "psi_f": 0.01, "Imax": 20.0, "alpha": 1/3, "rpm_max": 6000.0}
         self.Vdc = 48.0
         self.lut_data = None
         self._worker  = None
@@ -1210,6 +1296,7 @@ class MainWindow(QMainWindow):
         self.param_panel = ParamPanel(self.p_, self.Vdc)
         self.param_panel.rebuild_requested.connect(self._on_rebuild_requested)
         self.param_panel.mode_changed.connect(self._on_mode_changed)
+        self.param_panel.xaxis_changed.connect(self._on_xaxis_changed)
         root.addWidget(self.param_panel)
 
         # ---- Separator ----
@@ -1272,6 +1359,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'overlay') and hasattr(self, 'tabs'):
             self.overlay.update_geometry(self.tabs.geometry())
 
+    def _on_xaxis_changed(self, mode):
+        self.tmax_tab.set_xaxis_mode(mode)
+        self.lut_tab.set_xaxis_mode(mode)
+
     # ------------------------------------------------------------------
     def _on_rebuild_requested(self, p_new, Vdc_new):
         self.p_  = p_new
@@ -1297,7 +1388,7 @@ class MainWindow(QMainWindow):
 
         self.tmax_tab.update_plot(data["lam_grid"], data["Tmax_LUT"], p_=self.p_, Vdc=self.Vdc)
         self.lut_tab.update_plot(data["lam_grid"], data["Tratio_grid"],
-                                 data["Id_LUT_2D"], data["Iq_LUT_2D"])
+                                 data["Id_LUT_2D"], data["Iq_LUT_2D"], p_=self.p_, Vdc=self.Vdc)
         self.sim_tab.init_bg(self.p_, data["Id_at_Tmax"], data["Iq_at_Tmax"])
         self._refresh_sim()
 
@@ -1338,7 +1429,7 @@ class MainWindow(QMainWindow):
         
         # Update all tabs
         self.tmax_tab.update_plot(lam_grid, Tmax_LUT, p_=self.p_, Vdc=self.Vdc)
-        self.lut_tab.update_plot(lam_grid, Tratio_grid, Id_2D, Iq_2D)
+        self.lut_tab.update_plot(lam_grid, Tratio_grid, Id_2D, Iq_2D, p_=self.p_, Vdc=self.Vdc)
         self.sim_tab.init_bg(self.p_, Id_at_Tmax, Iq_at_Tmax)
         self._refresh_sim()
 
@@ -1351,10 +1442,10 @@ class MainWindow(QMainWindow):
         # Update LUT tab
         if is_ct:
             self.lut_tab.update_plot(d["lam_grid"], d["Tratio_grid"],
-                                     d["Id_LUT_2D"], d["Iq_LUT_2D"])
+                                     d["Id_LUT_2D"], d["Iq_LUT_2D"], p_=self.p_, Vdc=self.Vdc)
         else:
             self.lut_tab.update_trajectory(d["lam_grid"],
-                                           d["Id_at_Tmax"], d["Iq_at_Tmax"])
+                                           d["Id_at_Tmax"], d["Iq_at_Tmax"], p_=self.p_, Vdc=self.Vdc)
         self._refresh_sim()
 
     def _refresh_sim(self):
