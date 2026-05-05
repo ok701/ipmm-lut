@@ -1,5 +1,7 @@
 import sys
 import warnings
+import json
+import csv
 warnings.filterwarnings('ignore', category=UserWarning,
                         message='.*not compatible with tight_layout.*')
 import numpy as np
@@ -17,10 +19,28 @@ from PyQt5.QtWidgets import (
     QTabWidget, QLabel, QLineEdit, QPushButton, QFormLayout,
     QSizePolicy, QGroupBox, QSlider, QFrame, QProgressBar, QCheckBox,
     QComboBox, QDialog, QScrollArea, QDialogButtonBox,
+    QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem,
 )
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
+
+# ----- High-DPI support -----
+QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+# Scale helpers — computed once after QApplication is created.
+# _S(px)  : scale a pixel value relative to 96 dpi baseline
+# _FS(pt) : scale a font point size
+_DPI_SCALE = 1.0   # updated in main()
+
+def _S(px: int) -> int:
+    """Scale pixel dimension for the current DPI."""
+    return max(1, round(px * _DPI_SCALE))
+
+def _FS(pt: int) -> int:
+    """Scale font point size for the current DPI."""
+    return max(6, round(pt * _DPI_SCALE))
 
 
 # =========================
@@ -226,17 +246,17 @@ class FormulaHelpDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("수식 설명 — 최대토크 & 출력")
-        self.resize(600, 520)
-        self.setStyleSheet("""
-            QDialog { background: #FAFAFA; }
-            QLabel#title { font-size: 15px; font-weight: bold; color: #1565C0; }
-            QLabel#section { font-size: 12px; font-weight: bold; color: #0D47A1;
-                             margin-top: 12px; }
-            QLabel#body { font-size: 11px; color: #222; }
-            QLabel#formula { font-family: Courier New; font-size: 12px;
+        self.resize(_S(600), _S(520))
+        self.setStyleSheet(f"""
+            QDialog {{ background: #FAFAFA; }}
+            QLabel#title {{ font-size: {_FS(15)}px; font-weight: bold; color: #1565C0; }}
+            QLabel#section {{ font-size: {_FS(12)}px; font-weight: bold; color: #0D47A1;
+                             margin-top: {_S(12)}px; }}
+            QLabel#body {{ font-size: {_FS(11)}px; color: #222; }}
+            QLabel#formula {{ font-family: Courier New; font-size: {_FS(12)}px;
                              background: #E3F2FD; border: 1px solid #90CAF9;
-                             border-radius: 4px; padding: 8px; color: #0D47A1; }
-            QLabel#note { font-size: 10px; color: #555; font-style: italic; }
+                             border-radius: {_S(4)}px; padding: {_S(8)}px; color: #0D47A1; }}
+            QLabel#note {{ font-size: {_FS(10)}px; color: #555; font-style: italic; }}
         """)
 
         outer = QVBoxLayout(self)
@@ -248,9 +268,9 @@ class FormulaHelpDialog(QDialog):
         hl = QHBoxLayout(header)
         hl.setContentsMargins(16, 12, 16, 12)
         icon_lbl = QLabel("❓")
-        icon_lbl.setStyleSheet("color:white; font-size:20px;")
+        icon_lbl.setStyleSheet(f"color:white; font-size:{_FS(20)}px;")
         title_lbl = QLabel("최대토크 & 출력 계산 수식")
-        title_lbl.setStyleSheet("color:white; font-size:14px; font-weight:bold;")
+        title_lbl.setStyleSheet(f"color:white; font-size:{_FS(14)}px; font-weight:bold;")
         hl.addWidget(icon_lbl)
         hl.addWidget(title_lbl)
         hl.addStretch()
@@ -372,10 +392,10 @@ class TmaxTab(QWidget):
 
         # Help button
         btn_help = QPushButton("❓ 수식 설명")
-        btn_help.setFixedHeight(26)
+        btn_help.setFixedHeight(_S(26))
         btn_help.setStyleSheet(
-            "QPushButton { background:#1565C0; color:white; border-radius:4px;"
-            " font-size:11px; padding: 0 10px; }"
+            f"QPushButton {{ background:#1565C0; color:white; border-radius:{_S(4)}px;"
+            f" font-size:{_FS(11)}px; padding: 0 {_S(10)}px; }}"
             "QPushButton:hover { background:#0D47A1; }"
         )
         btn_help.clicked.connect(self._show_help)
@@ -450,16 +470,63 @@ class TmaxTab(QWidget):
 
 
 class LutTab(QWidget):
-    """LUT 3D surface 탭"""
+    """LUT 3D surface 및 테이블 탭"""
+    lut_imported = pyqtSignal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        self._fig = Figure(figsize=(12, 5))
+
+        # ---- Control Bar ----
+        ctrl_layout = QHBoxLayout()
+        ctrl_layout.setContentsMargins(_S(10), _S(5), _S(10), _S(5))
+        
+        self.btn_import = QPushButton("📥 LUT 가져오기 (CSV/JSON)")
+        self.btn_import.setFixedHeight(_S(30))
+        self.btn_import.clicked.connect(self._on_import_clicked)
+        
+        self.btn_export = QPushButton("📤 LUT 내보내기")
+        self.btn_export.setFixedHeight(_S(30))
+        self.btn_export.clicked.connect(self._on_export_clicked)
+        
+        ctrl_layout.addWidget(self.btn_import)
+        ctrl_layout.addWidget(self.btn_export)
+        ctrl_layout.addStretch()
+        layout.addLayout(ctrl_layout)
+
+        # ---- Sub Tabs ----
+        self.sub_tabs = QTabWidget()
+        self.sub_tabs.setStyleSheet(f"font-size: {_FS(10)}px;")
+        
+        # Plot Tab
+        self.plot_container = QWidget()
+        pl = QVBoxLayout(self.plot_container)
+        pl.setContentsMargins(0, 0, 0, 0)
+        self._fig = Figure(figsize=(_S(12), _S(5)))
         self.canvas = MplCanvas(self._fig)
-        layout.addWidget(self.canvas)
+        pl.addWidget(self.canvas)
+        self.sub_tabs.addTab(self.plot_container, "3D 그래프")
+        
+        # Table Tab
+        self.table_container = QWidget()
+        tl = QVBoxLayout(self.table_container)
+        self.table = QTableWidget()
+        self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet(f"font-size: {_FS(9)}px;")
+        tl.addWidget(self.table)
+        self.sub_tabs.addTab(self.table_container, "데이터 테이블")
+        
+        layout.addWidget(self.sub_tabs)
+        
         self._init_3d_axes()
+        
+        # Data storage
+        self.lam_grid = None
+        self.Tratio_grid = None
+        self.Id_LUT_2D = None
+        self.Iq_LUT_2D = None
 
     def _init_3d_axes(self):
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
@@ -468,10 +535,20 @@ class LutTab(QWidget):
         self.ax_iq = self._fig.add_subplot(122, projection='3d')
 
     def update_plot(self, lam_grid, Tratio_grid, Id_LUT_2D, Iq_LUT_2D):
+        self.lam_grid = lam_grid
+        self.Tratio_grid = Tratio_grid
+        self.Id_LUT_2D = Id_LUT_2D
+        self.Iq_LUT_2D = Iq_LUT_2D
+        
+        self._redraw_plot()
+        self._update_table()
+
+    def _redraw_plot(self):
+        if self.lam_grid is None: return
         self._init_3d_axes()
-        T, L = np.meshgrid(Tratio_grid, lam_grid)
-        Id_masked = np.ma.masked_invalid(Id_LUT_2D)
-        Iq_masked = np.ma.masked_invalid(Iq_LUT_2D)
+        T, L = np.meshgrid(self.Tratio_grid, self.lam_grid)
+        Id_masked = np.ma.masked_invalid(self.Id_LUT_2D)
+        Iq_masked = np.ma.masked_invalid(self.Iq_LUT_2D)
 
         self.ax_id.plot_surface(T, L, Id_masked, cmap='coolwarm',
                                 edgecolor='none', alpha=0.92)
@@ -489,6 +566,99 @@ class LutTab(QWidget):
         self.ax_iq.set_zlabel("Iq [A]", fontsize=7, labelpad=2)
         self.ax_iq.tick_params(labelsize=6)
         self.canvas.draw()
+
+    def _update_table(self):
+        if self.lam_grid is None: return
+        
+        # Display as a table: lam_max on vertical, T_ratio on horizontal
+        # We'll show Id and Iq combined or just one? Let's show lam_max, T_ratio, Id, Iq columns for all points
+        rows = []
+        for i, lam in enumerate(self.lam_grid):
+            for j, ratio in enumerate(self.Tratio_grid):
+                rows.append([lam, ratio, self.Id_LUT_2D[i, j], self.Iq_LUT_2D[i, j]])
+        
+        self.table.setRowCount(len(rows))
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["lam_max [Wb]", "T_ratio", "Id [A]", "Iq [A]"])
+        
+        for r, data in enumerate(rows):
+            for c, val in enumerate(data):
+                item = QTableWidgetItem(f"{val:.6f}" if np.isfinite(val) else "NaN")
+                item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(r, c, item)
+        
+        self.table.resizeColumnsToContents()
+
+    def _on_import_clicked(self):
+        path, _ = QFileDialog.getOpenFileName(self, "LUT 파일 열기", "", "LUT Files (*.csv *.json)")
+        if not path: return
+        
+        try:
+            if path.endswith('.json'):
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                lam_grid = np.array(data["lam_grid"])
+                Tratio_grid = np.array(data["Tratio_grid"])
+                Id_LUT_2D = np.array(data["Id_LUT_2D"])
+                Iq_LUT_2D = np.array(data["Iq_LUT_2D"])
+            else:
+                # Simple CSV parsing: lam, ratio, id, iq
+                raw = np.loadtxt(path, delimiter=',', skiprows=1)
+                lams = np.unique(raw[:, 0])
+                ratios = np.unique(raw[:, 1])
+                Nl, Nr = len(lams), len(ratios)
+                if Nl * Nr != len(raw):
+                    raise ValueError("CSV 데이터가 정규 그리드 형식이 아닙니다.")
+                
+                lam_grid = lams
+                Tratio_grid = ratios
+                Id_LUT_2D = raw[:, 2].reshape((Nl, Nr))
+                Iq_LUT_2D = raw[:, 3].reshape((Nl, Nr))
+            
+            # Interpolators need to be rebuilt in MainWindow
+            imported_data = {
+                "lam_grid": lam_grid,
+                "Tratio_grid": Tratio_grid,
+                "Id_LUT_2D": Id_LUT_2D,
+                "Iq_LUT_2D": Iq_LUT_2D,
+            }
+            self.lut_imported.emit(imported_data)
+            QMessageBox.information(self, "성공", f"LUT 데이터를 성공적으로 가져왔습니다.\n(그리드: {len(lam_grid)}x{len(Tratio_grid)})")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"파일을 읽는 중 오류가 발생했습니다:\n{str(e)}")
+
+    def _on_export_clicked(self):
+        if self.lam_grid is None:
+            QMessageBox.warning(self, "경고", "내보낼 데이터가 없습니다. 먼저 LUT를 생성하세요.")
+            return
+            
+        path, filter = QFileDialog.getSaveFileName(self, "LUT 파일 저장", "motor_lut", "CSV Files (*.csv);;JSON Files (*.json)")
+        if not path: return
+        
+        try:
+            if "JSON" in filter:
+                if not path.endswith('.json'): path += '.json'
+                data = {
+                    "lam_grid": self.lam_grid.tolist(),
+                    "Tratio_grid": self.Tratio_grid.tolist(),
+                    "Id_LUT_2D": self.Id_LUT_2D.tolist(),
+                    "Iq_LUT_2D": self.Iq_LUT_2D.tolist(),
+                }
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2)
+            else:
+                if not path.endswith('.csv'): path += '.csv'
+                with open(path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["lam_max", "T_ratio", "Id", "Iq"])
+                    for i, lam in enumerate(self.lam_grid):
+                        for j, ratio in enumerate(self.Tratio_grid):
+                            writer.writerow([lam, ratio, self.Id_LUT_2D[i, j], self.Iq_LUT_2D[i, j]])
+            
+            QMessageBox.information(self, "성공", "파일을 성공적으로 저장했습니다.")
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"파일 저장 중 오류가 발생했습니다:\n{str(e)}")
 
     def update_trajectory(self, lam_grid, Id_at_Tmax, Iq_at_Tmax):
         """MTPA/MTPV mode: show MTPV surface extruded along T_ratio (3D)."""
@@ -536,7 +706,8 @@ class SimTab(QWidget):
 
         # ---- controls (left of sim tab) ----
         ctrl = QWidget()
-        ctrl.setFixedWidth(220)
+        ctrl.setMinimumWidth(_S(180))
+        ctrl.setMaximumWidth(_S(260))
         vl = QVBoxLayout(ctrl)
         vl.setContentsMargins(6, 6, 6, 6)
         vl.setSpacing(12)
@@ -576,7 +747,7 @@ class SimTab(QWidget):
         vl.addWidget(sep)
 
         res_title = QLabel("동작점 결과")
-        res_title.setFont(QFont("Arial", 9, QFont.Bold))
+        res_title.setFont(QFont("Arial", _FS(9), QFont.Bold))
         vl.addWidget(res_title)
 
         form = QFormLayout()
@@ -588,7 +759,7 @@ class SimTab(QWidget):
         self.lbl_tmax   = QLabel("—")
         for lbl in [self.lbl_id_op, self.lbl_iq_op,
                     self.lbl_te_op, self.lbl_lam_op, self.lbl_tmax]:
-            lbl.setFont(QFont("Courier", 9))
+            lbl.setFont(QFont("Courier", _FS(9)))
         form.addRow("id* [A]",    self.lbl_id_op)
         form.addRow("iq* [A]",    self.lbl_iq_op)
         form.addRow("Te [Nm]",    self.lbl_te_op)
@@ -730,7 +901,7 @@ class DescLineEdit(QLineEdit):
     def __init__(self, val, desc, parent=None):
         super().__init__(val, parent)
         self._desc = desc
-        self.setFixedHeight(26)
+        self.setFixedHeight(_S(26))
     def focusInEvent(self, e):
         super().focusInEvent(e)
         self.focused.emit(self._desc)
@@ -754,7 +925,8 @@ class ParamPanel(QWidget):
 
     def __init__(self, p_init, Vdc_init, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(240)
+        self.setMinimumWidth(_S(200))
+        self.setMaximumWidth(_S(280))
         self._build_ui(p_init, Vdc_init)
 
     def _show_desc(self, text):
@@ -766,7 +938,7 @@ class ParamPanel(QWidget):
         layout.setSpacing(8)
 
         title = QLabel("모터 파라미터")
-        title.setFont(QFont("Arial", 11, QFont.Bold))
+        title.setFont(QFont("Arial", _FS(11), QFont.Bold))
         layout.addWidget(title)
 
         sep = QFrame(); sep.setFrameShape(QFrame.HLine)
@@ -798,9 +970,9 @@ class ParamPanel(QWidget):
         layout.addLayout(form)
 
         self.btn = QPushButton("LUT 생성")
-        self.btn.setFixedHeight(38)
+        self.btn.setFixedHeight(_S(38))
         self.btn.setStyleSheet(
-            "QPushButton { background:#1565C0; color:white; border-radius:5px; font-weight:bold; font-size:11px; }"
+            f"QPushButton {{ background:#1565C0; color:white; border-radius:{_S(5)}px; font-weight:bold; font-size:{_FS(11)}px; }}"
             "QPushButton:hover { background:#0D47A1; }"
             "QPushButton:disabled { background:#90A4AE; color:#CFD8DC; }"
         )
@@ -810,13 +982,13 @@ class ParamPanel(QWidget):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        self.progress.setFixedHeight(10)
+        self.progress.setFixedHeight(_S(10))
         self.progress.setTextVisible(False)
         layout.addWidget(self.progress)
 
         self.status_lbl = QLabel("")
         self.status_lbl.setAlignment(Qt.AlignCenter)
-        self.status_lbl.setStyleSheet("color: #555; font-size: 10px;")
+        self.status_lbl.setStyleSheet(f"color: #555; font-size: {_FS(10)}px;")
         layout.addWidget(self.status_lbl)
 
         # Constant-torque checkbox
@@ -829,16 +1001,16 @@ class ParamPanel(QWidget):
 
         # Inline description label — pinned to bottom
         desc_title = QLabel("설명")
-        desc_title.setStyleSheet("color:#888; font-size:10px;")
+        desc_title.setStyleSheet(f"color:#888; font-size:{_FS(10)}px;")
         layout.addWidget(desc_title)
 
         self.desc_lbl = QLabel("")
         self.desc_lbl.setWordWrap(True)
         self.desc_lbl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.desc_lbl.setStyleSheet(
-            "color:#222; font-size:11px; background:#F5F5F5;"
-            " border:1px solid #DDD; border-radius:3px; padding:5px;")
-        self.desc_lbl.setMinimumHeight(70)
+            f"color:#222; font-size:{_FS(11)}px; background:#F5F5F5;"
+            f" border:1px solid #DDD; border-radius:{_S(3)}px; padding:{_S(5)}px;")
+        self.desc_lbl.setMinimumHeight(_S(70))
         layout.addWidget(self.desc_lbl)
 
     def _on_ct_changed(self):
@@ -880,7 +1052,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("IPMM LUT 툴")
-        self.resize(1200, 740)
+        self.resize(_S(1200), _S(740))
 
         self.p_  = {"pole_pairs": 4, "Ld": 0.004, "Lq": 0.008,
                     "psi_f": 0.01, "Imax": 20.0, "alpha": 1/3}
@@ -913,27 +1085,28 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.North)
         self.tabs.setEnabled(False)   # disabled until LUT built
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane {
+        self.tabs.setStyleSheet(f"""
+            QTabWidget::pane {{
                 border: 1px solid #B0BEC5;
                 border-radius: 3px;
-            }
-            QTabBar::tab {
+            }}
+            QTabBar::tab {{
                 background: #ECEFF1;
                 border: 1px solid #B0BEC5;
-                padding: 6px 18px;
-                font-size: 11px;
-            }
-            QTabBar::tab:selected {
+                padding: {_S(6)}px {_S(18)}px;
+                font-size: {_FS(11)}px;
+            }}
+            QTabBar::tab:selected {{
                 background: #1565C0;
                 color: white;
                 font-weight: bold;
-            }
-            QTabBar::tab:hover:!selected { background: #BBDEFB; }
+            }}
+            QTabBar::tab:hover:!selected {{ background: #BBDEFB; }}
         """)
 
         self.tmax_tab = TmaxTab()
         self.lut_tab  = LutTab()
+        self.lut_tab.lut_imported.connect(self._on_lut_imported)
         self.sim_tab  = SimTab()
 
         self.tabs.addTab(self.tmax_tab, "최대토크")
@@ -962,6 +1135,46 @@ class MainWindow(QMainWindow):
         self.lut_tab.update_plot(data["lam_grid"], data["Tratio_grid"],
                                  data["Id_LUT_2D"], data["Iq_LUT_2D"])
         self.sim_tab.init_bg(self.p_, data["Id_at_Tmax"], data["Iq_at_Tmax"])
+        self._refresh_sim()
+
+    def _on_lut_imported(self, data):
+        """Called when a LUT file is imported from the LUT tab."""
+        lam_grid = data["lam_grid"]
+        Tratio_grid = data["Tratio_grid"]
+        Id_2D = data["Id_LUT_2D"]
+        Iq_2D = data["Iq_LUT_2D"]
+        
+        # Reconstruct missing parts: Tmax_LUT is basically the last column (ratio=1.0)
+        # but since our Tratio_grid might be slightly different, we'll take the max or last.
+        # Here we assume the last index in Tratio_grid corresponds to the max torque point.
+        Tmax_LUT = np.array([Te(Id_2D[i, -1], Iq_2D[i, -1], self.p_) for i in range(len(lam_grid))])
+        Id_at_Tmax = Id_2D[:, -1]
+        Iq_at_Tmax = Iq_2D[:, -1]
+        
+        # Build interpolators
+        interp_id = RegularGridInterpolator(
+            (lam_grid, Tratio_grid), Id_2D,
+            method='linear', bounds_error=False, fill_value=None)
+        interp_iq = RegularGridInterpolator(
+            (lam_grid, Tratio_grid), Iq_2D,
+            method='linear', bounds_error=False, fill_value=None)
+            
+        full_data = {
+            **data,
+            "Tmax_LUT": Tmax_LUT,
+            "Id_at_Tmax": Id_at_Tmax,
+            "Iq_at_Tmax": Iq_at_Tmax,
+            "interp_id": interp_id,
+            "interp_iq": interp_iq,
+        }
+        
+        self.lut_data = full_data
+        self.tabs.setEnabled(True)
+        
+        # Update all tabs
+        self.tmax_tab.update_plot(lam_grid, Tmax_LUT, p_=self.p_, Vdc=self.Vdc)
+        self.lut_tab.update_plot(lam_grid, Tratio_grid, Id_2D, Iq_2D)
+        self.sim_tab.init_bg(self.p_, Id_at_Tmax, Iq_at_Tmax)
         self._refresh_sim()
 
     def _on_mode_changed(self):
@@ -1014,9 +1227,16 @@ class MainWindow(QMainWindow):
 # Entry point
 # =========================
 def main():
+    global _DPI_SCALE
     app = QApplication(sys.argv)
+
+    # Compute DPI scale factor relative to 96 dpi baseline
+    screen = app.primaryScreen()
+    logical_dpi = screen.logicalDotsPerInch()
+    _DPI_SCALE = max(0.75, min(logical_dpi / 96.0, 3.0))
+
     app.setStyle("Fusion")
-    app.setFont(QFont("Arial", 9))
+    app.setFont(QFont("Arial", _FS(9)))
     win = MainWindow()
     win.show()
     sys.exit(app.exec_())
