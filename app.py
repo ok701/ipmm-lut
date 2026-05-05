@@ -163,6 +163,29 @@ def solve_min_current_for_T_lam(Tref, lam_ref, p_, x0=None):
     return best_x, None
 
 
+def solve_zero_torque_point_for_lam(lam_ref, p_):
+    """
+    T = 0 조건에서 lam_mag <= lam_ref를 만족하는 Id/Iq를 반환.
+    기본은 Id=0, Iq=0.
+    만약 lam_ref < psi_f이면, Iq=0으로 두고
+    Id = (lam_ref - psi_f) / Ld 로 약자속 Id를 계산.
+    전류 제한 Imax를 넘으면 np.nan, np.nan 반환.
+    """
+    psi_f = p_["psi_f"]
+    Ld = p_["Ld"]
+    Imax = p_["Imax"]
+    
+    if psi_f <= lam_ref:
+        return 0.0, 0.0
+    else:
+        id0 = (lam_ref - psi_f) / Ld
+        iq0 = 0.0
+        if abs(id0) <= Imax:
+            return id0, iq0
+        else:
+            return np.nan, np.nan
+
+
 # =========================
 # Background worker thread
 # =========================
@@ -215,15 +238,31 @@ class LutWorker(QThread):
             iq0_w  = float(np.interp(lam_max, lam_grid, Iq_at_Tmax))
             for j, ratio in enumerate(Tratio_grid):
                 Tref_ij = ratio * Tmax_i
-                if ratio < 0.01:
-                    Id_LUT_2D[i, j] = np.nan
-                    Iq_LUT_2D[i, j] = np.nan
+                
+                if ratio == 0.0:
+                    id0, iq0 = solve_zero_torque_point_for_lam(lam_max, p)
+                    Id_LUT_2D[i, j] = id0
+                    Iq_LUT_2D[i, j] = iq0
                 else:
+                    x0_used = [id0_w, iq0_w]
+                    z_id = np.nan
+                    if ratio < 0.01:
+                        z_id, z_iq = solve_zero_torque_point_for_lam(lam_max, p)
+                        if not np.isnan(z_id):
+                            x0_used = [z_id, z_iq]
+
                     sol_ij, _ = solve_min_current_for_T_lam(
-                        Tref_ij, lam_max, p, x0=[id0_w, iq0_w])
+                        Tref_ij, lam_max, p, x0=x0_used)
+                        
+                    # Fallback if x0=zero_torque failed
+                    if sol_ij is None and ratio < 0.01 and not np.isnan(z_id):
+                        sol_ij, _ = solve_min_current_for_T_lam(
+                            Tref_ij, lam_max, p, x0=[id0_w, iq0_w])
+
                     if sol_ij is not None:
                         Id_LUT_2D[i, j] = sol_ij[0]
                         Iq_LUT_2D[i, j] = sol_ij[1]
+                        
                 done += 1
                 if (done % 5) == 0:
                     self.progress.emit(round(done / total_steps * 100))
@@ -394,16 +433,16 @@ class FormulaHelpDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("수식 설명 — 최대토크 & 출력")
-        self.resize(_S(600), _S(520))
+        self.resize(_S(600), _S(500))
         self.setStyleSheet(f"""
             QDialog {{ background: #FAFAFA; }}
             QLabel#title {{ font-size: {_FS(15)}px; font-weight: bold; color: #1565C0; }}
             QLabel#section {{ font-size: {_FS(12)}px; font-weight: bold; color: #0D47A1;
                              margin-top: {_S(12)}px; }}
             QLabel#body {{ font-size: {_FS(11)}px; color: #222; }}
-            QLabel#formula {{ font-family: Courier New; font-size: {_FS(12)}px;
+            QLabel#formula {{ font-family: 'Consolas', 'Courier New'; font-size: {_FS(13)}px;
                              background: #E3F2FD; border: 1px solid #90CAF9;
-                             border-radius: {_S(4)}px; padding: {_S(8)}px; color: #0D47A1; }}
+                             border-radius: {_S(4)}px; padding: {_S(12)}px; color: #0D47A1; }}
             QLabel#note {{ font-size: {_FS(10)}px; color: #555; font-style: italic; }}
         """)
 
@@ -457,65 +496,122 @@ class FormulaHelpDialog(QDialog):
             return l
 
         # --- Section 1: 전압 제한 ---
-        vl.addWidget(section("1. 전압 제한과 최대 자속 (Voltage Limit & λ_max)"))
+        vl.addWidget(section("1. 전압 제한과 최대 자속 (Voltage Limit & \u03bb\u2098\u2090\u2093)"))
         vl.addWidget(body(
-            "인버터 출력 전압의 크기는 직류 링크 전압과 변조율 α에 의해 결정됩니다. "
+            "인버터 출력 전압의 크기는 직류 링크 전압과 변조율 \u03b1에 의해 결정됩니다. "
             "정상상태에서 전압 방정식을 무시하면, "
-            "최대 허용 자속(λ_max)은 최대 출력 전압을 전기 각속도로 나눈 값입니다."
+            "최대 허용 자속(\u03bb\u2098\u2090\u2093)은 최대 출력 전압을 전기 각속도로 나눈 값입니다."
         ))
         vl.addWidget(formula(
-            "V_max  = α × V_dc\n"
-            "ω_e   = P × ω_mech  = P × (rpm × 2π / 60)\n"
-            "λ_max  = V_max / ω_e   [Wb]"
+            "V\u2098\u2090\u2093 = \u03b1 \u00d7 V_dc\n"
+            "\u03c9_e = P \u00d7 \u03c9\u2098\u2091\u2092\u2095 = P \u00d7 (rpm \u00d7 2\u03c0 / 60)\n"
+            "\u03bb\u2098\u2090\u2093 = V\u2098\u2090\u2093 / \u03c9_e  [Wb]"
         ))
         vl.addWidget(note(
-            "α: 인버터 전압 이용률 (공간벡터 변조 시 ≈ 1/√3 ≈ 0.577)\n"
+            "\u03b1: 인버터 전압 이용률 (공간벡터 변조 시 \u2248 1/\u221a3 \u2248 0.577)\n"
             "P: 극쌍수 (pole pairs)"
         ))
 
         # --- Section 2: Torque ---
         vl.addWidget(section("2. 최대토크 (Max Torque)"))
         vl.addWidget(body(
-            "주어진 λ_max 제약 하에서, 전류 제한원(Imax) 내의 (id, iq) 쌍 중 "
-            "발생 토크를 최대로 하는 점을 수치 최적화(SLSQP)로 구합니다. "
-            "토크 방정식은 IPMSM(내장형 영구자석 동기기) 기준입니다:"
+            "주어진 \u03bb\u2098\u2090\u2093 제약 하에서, 전류 제한원(I\u2098\u2090\u2093) 내의 (i_d, i_q) 쌍 중 "
+            "발생 토크를 최대로 하는 점을 수치 최적화(SLSQP)로 구합니다."
         ))
         vl.addWidget(formula(
-            "Te = 1.5 × P × [ ψ_f × i_q + (L_d − L_q) × i_d × i_q ]  [Nm]\n\n"
-            "  최적화 문제:\n"
-            "  maximize  Te(id, iq)\n"
-            "  subject to\n"
-            "    id² + iq²  ≤  Imax²      (전류 제한)\n"
-            "    λ(id, iq)  ≤  λ_max      (전압/자속 제한)\n"
-            "    id ≤ 0,  iq ≥ 0"
+            "T_e = 1.5 \u00d7 P \u00d7 [ \u03c8_f \u00d7 i_q + (L_d \u2212 L_q) \u00d7 i_d \u00d7 i_q ]  [Nm]\n\n"
+            "  \u2022 최적화 문제:\n"
+            "    maximize  T_e(i_d, i_q)\n"
+            "    subject to\n"
+            "      i_d\u00b2 + i_q\u00b2 \u2264 I\u2098\u2090\u2093\u00b2\n"
+            "      \u03bb(i_d, i_q) \u2264 \u03bb\u2098\u2090\u2093\n"
+            "      i_d \u2264 0,  i_q \u2265 0"
         ))
         vl.addWidget(note(
-            "ψ_f: 영구자석 자속 [Wb]  |  L_d, L_q: d/q축 인덕턴스 [H]\n"
-            "λ(id,iq) = √( (ψ_f + L_d·id)² + (L_q·iq)² )"
+            "\u03c8_f: 영구자석 자속 [Wb] | L_d, L_q: 인덕턴스 [H]\n"
+            "\u03bb(i_d, i_q) = \u221a( (\u03c8_f + L_d\u00b7i_d)\u00b2 + (L_q\u00b7i_q)\u00b2 )"
         ))
 
         # --- Section 3: Power ---
         vl.addWidget(section("3. 최대출력 (Max Power)"))
         vl.addWidget(body(
-            "최대출력은 각 운전점의 최대토크에 해당 기계적 각속도를 곱하여 계산합니다. "
-            "X축이 '속도(rpm)' 모드일 때, 운전 속도와 해당 λ_max는 아래 역변환 관계로 연결됩니다:"
+            "최대출력은 각 운전점의 최대토크에 기계적 각속도를 곱하여 계산합니다."
         ))
         vl.addWidget(formula(
-            "ω_mech = V_max / (λ_max × P)   [rad/s]\n"
-            "rpm    = ω_mech × 60 / (2π)\n\n"
-            "P_max  = T_max × ω_mech         [W]\n"
-            "       = T_max × ω_mech / 1000  [kW]"
-        ))
-        vl.addWidget(note(
-            "λ_max 그리드 값이 클수록 낮은 속도에 대응하며(역비례 관계),\n"
-            "플롯 시 속도 오름차순으로 정렬하여 표시합니다."
+            "\u03c9\u2098\u2091\u2092\u2095 = V\u2098\u2090\u2093 / (\u03bb\u2098\u2090\u2093 \u00d7 P)  [rad/s]\n"
+            "rpm = \u03c9\u2098\u2091\u2092\u2095 \u00d7 60 / (2\u03c0)\n\n"
+            "P\u2098\u2090\u2093 = T\u2098\u2090\u2093 \u00d7 \u03c9\u2098\u2091\u2092\u2095  [W]"
         ))
 
         vl.addStretch()
         scroll.setWidget(content)
         outer.addWidget(scroll)
 
-        # ---- Close button ----
+        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
+        btn_box.setContentsMargins(16, 0, 16, 0)
+        btn_box.rejected.connect(self.accept)
+        outer.addWidget(btn_box)
+
+class LutHelpDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("수식 설명 — LUT 생성 및 저토크")
+        self.resize(_S(600), _S(420))
+        self.setStyleSheet(f"""
+            QDialog {{ background: #FAFAFA; }}
+            QLabel#section {{ font-size: {_FS(12)}px; font-weight: bold; color: #0D47A1; margin-top: {_S(12)}px; }}
+            QLabel#body {{ font-size: {_FS(11)}px; color: #222; }}
+            QLabel#formula {{ font-family: 'Consolas', 'Courier New'; font-size: {_FS(13)}px;
+                             background: #F1F8E9; border: 1px solid #C5E1A5;
+                             border-radius: {_S(4)}px; padding: {_S(12)}px; color: #33691E; }}
+            QLabel#note {{ font-size: {_FS(10)}px; color: #555; font-style: italic; }}
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 8)
+
+        header = QWidget(); header.setStyleSheet("background:#2E7D32;")
+        hl = QHBoxLayout(header); hl.setContentsMargins(16, 12, 16, 12)
+        icon_lbl = QLabel("📖"); icon_lbl.setStyleSheet(f"color:white; font-size:{_FS(20)}px;")
+        title_lbl = QLabel("LUT 생성 및 무부하 제어 수식"); title_lbl.setStyleSheet(f"color:white; font-size:{_FS(14)}px; font-weight:bold;")
+        hl.addWidget(icon_lbl); hl.addWidget(title_lbl); hl.addStretch()
+        outer.addWidget(header)
+
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget(); vl = QVBoxLayout(content); vl.setContentsMargins(20, 12, 20, 12); vl.setSpacing(10)
+
+        def section(text): l = QLabel(text); l.setObjectName("section"); return l
+        def body(text): l = QLabel(text); l.setObjectName("body"); l.setWordWrap(True); return l
+        def formula(text): l = QLabel(text); l.setObjectName("formula"); l.setWordWrap(True); return l
+        def note(text): l = QLabel(text); l.setObjectName("note"); l.setWordWrap(True); return l
+
+        # --- Section: LUT Optimization ---
+        vl.addWidget(section("1. 전 영역 LUT 생성 (Minimum Current Search)"))
+        vl.addWidget(body("주어진 자속 제약 \u03bb\u2098\u2090\u2093와 지령 토크 비율 T_ratio에 대해 전류 크기를 최소화하는 운전점을 찾습니다."))
+        vl.addWidget(formula(
+            "T_ref = T_ratio \u00d7 T\u2098\u2090\u2093(\u03bb\u2098\u2090\u2093)\n\n"
+            "Minimize \u221a(i_d\u00b2 + i_q\u00b2)\n"
+            "Subject to:\n"
+            "  T_e(i_d, i_q) = T_ref\n"
+            "  \u03bb(i_d, i_q) \u2264 \u03bb\u2098\u2090\u2093"
+        ))
+
+        # --- Section: Zero Torque ---
+        vl.addWidget(section("2. 무부하 및 저토크 (Zero-Torque & Low-Torque)"))
+        vl.addWidget(body("무부하(T=0) 운전 시에도 고속 영역에서는 전압 제한을 위해 약자속 전류 주입이 필요합니다."))
+        vl.addWidget(formula(
+            "If \u03bb\u2098\u2090\u2093 \u2265 \u03c8_f (정상 영역):\n"
+            "  i_d = 0,  i_q = 0\n\n"
+            "Else (\uc57d\uc790\uc18d \uc601\uc5ed):\n"
+            "  i_d = (\u03bb\u2098\u2090\u2093 \u2212 \u03c8_f) / L_d\n"
+            "  i_q = 0"
+        ))
+        vl.addWidget(note("이 해석적 해는 저토크 구간 수치 최적화의 초기값(x0)으로 사용되어 연산 안정성을 확보합니다."))
+
+        vl.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
         btn_box = QDialogButtonBox(QDialogButtonBox.Close)
         btn_box.setContentsMargins(16, 0, 16, 0)
         btn_box.rejected.connect(self.accept)
@@ -640,14 +736,24 @@ class LutTab(QWidget):
         self.btn_export.setFixedHeight(_S(30))
         self.btn_export.clicked.connect(self._on_export_clicked)
         
+        btn_help = QPushButton("❓ 수식 설명")
+        btn_help.setFixedHeight(_S(30))
+        btn_help.setStyleSheet(
+            f"QPushButton {{ background:#2E7D32; color:white; border-radius:{_S(4)}px;"
+            f" font-size:{_FS(11)}px; padding: 0 {_S(10)}px; }}"
+            "QPushButton:hover { background:#1B5E20; }"
+        )
+        btn_help.clicked.connect(self._show_help)
+
         ctrl_layout.addWidget(self.btn_import)
         ctrl_layout.addWidget(self.btn_export)
         ctrl_layout.addStretch()
+        ctrl_layout.addWidget(btn_help)
         layout.addLayout(ctrl_layout)
 
         # ---- Sub Tabs ----
         self.sub_tabs = QTabWidget()
-        self.sub_tabs.setStyleSheet(f"font-size: {_FS(10)}px;")
+
         
         # Plot Tab
         self.plot_container = QWidget()
@@ -845,6 +951,10 @@ class LutTab(QWidget):
             QMessageBox.information(self, "성공", "파일을 성공적으로 저장했습니다.")
         except Exception as e:
             QMessageBox.critical(self, "오류", f"파일 저장 중 오류가 발생했습니다:\n{str(e)}")
+
+    def _show_help(self):
+        dlg = LutHelpDialog(self)
+        dlg.exec_()
 
     def update_trajectory(self, lam_grid, Id_at_Tmax, Iq_at_Tmax, p_=None, Vdc=None):
         """MTPA/MTPV mode: show MTPV surface extruded along T_ratio (3D)."""
@@ -1127,13 +1237,19 @@ class ParamPanel(QWidget):
         "pp":    "극쌍수 — 모터 극쌍수 (pole pairs). 전기적 속도 = 극쌍수 × 기계적 속도",
         "alpha": "α — 인버터 출력 전압 이용률 (Vmax = α × Vdc). 공간벡터 변조 시 1/√3 ≈ 0.577",
         "rpm_max": "최대 속도 [rpm] — 분석을 수행할 최대 속도 제한치",
-        "ct":    "동토크 제어 ON → λ_max × T_ratio 2D LUT로 지령 토크를 정밀 추적\n"
-                 "동토크 제어 OFF → λ_max 1D 룩업으로 MTPA/MTPV 최대토크 점만 추적",
+        "ct":    "동토크제어 2DLUT: 전 영역(자속\u00d7토크비)에 대한 정밀 전류 맵 생성\n"
+                 "최대토크제어 1DLUT: 각 자속별 최대토크(MTPA/MTPV) 지점만 추출",
     }
 
     def __init__(self, p_init, Vdc_init, parent=None):
         super().__init__(parent)
-        self.setFixedWidth(_S(240))
+        self.setFixedWidth(_S(270))
+        self.setObjectName("ParamPanel")
+        self.setStyleSheet("""
+            QWidget#ParamPanel {
+                background-color: white; border: 1px solid #E0E0E0; border-radius: 6px;
+            }
+        """)
         self._build_ui(p_init, Vdc_init)
 
     def _show_desc(self, text):
@@ -1141,18 +1257,20 @@ class ParamPanel(QWidget):
 
     def _build_ui(self, p_init, Vdc_init):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(12)
 
         title = QLabel("모터 파라미터")
-        title.setFont(QFont("Arial", _FS(11), QFont.Bold))
+        title.setFont(QFont("Segoe UI", _FS(12), QFont.Bold))
         layout.addWidget(title)
 
         sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #EEEEEE;")
         layout.addWidget(sep)
 
         form = QFormLayout()
-        form.setSpacing(6)
+        form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         def de(val, key, dec=4):
             e = DescLineEdit(str(round(val, dec)), self._DESCS[key])
@@ -1188,22 +1306,16 @@ class ParamPanel(QWidget):
         self.btn.clicked.connect(self._on_click)
         layout.addWidget(self.btn)
 
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        self.progress.setVisible(False)
-        self.progress.setFixedHeight(_S(4))
-        self.progress.setTextVisible(False)
-        self.progress.setStyleSheet(
-            f"QProgressBar {{ border: none; background: #E3F2FD; }}"
-            f"QProgressBar::chunk {{ background: #1565C0; }}"
-        )
-        layout.addWidget(self.progress)
-
-        # Constant-torque checkbox
-        self.chk_const_torque = QCheckBox("동토크 제어")
-        self.chk_const_torque.setChecked(True)
-        self.chk_const_torque.stateChanged.connect(self._on_ct_changed)
-        layout.addWidget(self.chk_const_torque)
+        # Control Mode combo
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItems(["동토크제어 2DLUT", "최대토크제어 1DLUT"])
+        self.combo_mode.setFixedHeight(_S(26))
+        self.combo_mode.currentIndexChanged.connect(self._on_ct_changed)
+        
+        ml = QHBoxLayout()
+        ml.addWidget(QLabel("제어 모드:"))
+        ml.addWidget(self.combo_mode)
+        layout.addLayout(ml)
 
         # X-axis combo
         self.combo_x = QComboBox()
@@ -1241,7 +1353,7 @@ class ParamPanel(QWidget):
         return self.combo_x.currentText()
 
     def is_const_torque(self):
-        return self.chk_const_torque.isChecked()
+        return "2DLUT" in self.combo_mode.currentText()
 
     def _on_click(self):
         try:
@@ -1257,15 +1369,13 @@ class ParamPanel(QWidget):
             Vdc = float(self.e_vdc.text())
             p["Vdc"] = Vdc
         except ValueError:
-            self.status_lbl.setText("⚠ 잘못된 입력값")
+            self._show_desc("⚠ 잘못된 입력값이 있습니다. 파라미터를 확인해주세요.")
             return
         self.btn.setEnabled(False)
-        self.progress.setVisible(True)
         self.rebuild_requested.emit(p, Vdc)
 
     def on_done(self):
         self.btn.setEnabled(True)
-        self.progress.setVisible(False)
 
 
 # =========================
@@ -1286,11 +1396,36 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
     def _build_ui(self):
+        self.setStyleSheet(f"""
+            QMainWindow {{ background-color: #F0F2F5; font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; }}
+            QLabel {{ font-size: {_FS(11)}px; color: #2C3E50; }}
+            QComboBox, QLineEdit {{
+                border: 1px solid #CFD8DC; border-radius: {_S(4)}px; padding: {_S(4)}px {_S(6)}px;
+                background-color: #FAFAFA; font-size: {_FS(11)}px;
+            }}
+            QComboBox:hover, QLineEdit:hover {{ border-color: #90CAF9; background-color: white; }}
+            QComboBox:focus, QLineEdit:focus {{ border-color: #1565C0; background-color: white; }}
+            QComboBox::drop-down {{ border: none; width: {_S(20)}px; }}
+            
+            QTabWidget::pane {{
+                border: 1px solid #E0E0E0; background: white; border-radius: {_S(6)}px;
+            }}
+            QTabBar::tab {{
+                background: transparent; border: none; border-bottom: 3px solid transparent;
+                padding: {_S(8)}px {_S(20)}px; font-size: {_FS(12)}px; color: #78909C; font-weight: bold;
+                margin-right: {_S(2)}px;
+            }}
+            QTabBar::tab:selected {{
+                color: #1565C0; border-bottom: 3px solid #1565C0;
+            }}
+            QTabBar::tab:hover:!selected {{ color: #42A5F5; border-bottom: 3px solid #BBDEFB; }}
+        """)
+
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(6)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)
 
         # ---- Left: param panel ----
         self.param_panel = ParamPanel(self.p_, self.Vdc)
@@ -1299,34 +1434,11 @@ class MainWindow(QMainWindow):
         self.param_panel.xaxis_changed.connect(self._on_xaxis_changed)
         root.addWidget(self.param_panel)
 
-        # ---- Separator ----
-        sep = QFrame()
-        sep.setFrameShape(QFrame.VLine)
-        sep.setFrameShadow(QFrame.Sunken)
-        root.addWidget(sep)
-
         # ---- Right: tab widget ----
         self.tabs = QTabWidget()
         self.tabs.setTabPosition(QTabWidget.North)
         self.tabs.setEnabled(False)   # disabled until LUT built
-        self.tabs.setStyleSheet(f"""
-            QTabWidget::pane {{
-                border: 1px solid #B0BEC5;
-                border-radius: 3px;
-            }}
-            QTabBar::tab {{
-                background: #ECEFF1;
-                border: 1px solid #B0BEC5;
-                padding: {_S(6)}px {_S(18)}px;
-                font-size: {_FS(11)}px;
-            }}
-            QTabBar::tab:selected {{
-                background: #1565C0;
-                color: white;
-                font-weight: bold;
-            }}
-            QTabBar::tab:hover:!selected {{ background: #BBDEFB; }}
-        """)
+
 
         self.tmax_tab = TmaxTab()
         self.lut_tab  = LutTab()
