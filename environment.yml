@@ -10,3 +10,6 @@ dependencies:
   - matplotlib
   - ipympl
   - jupyter
+  - pyqt=5
+  - ipympl
+  - jupyter

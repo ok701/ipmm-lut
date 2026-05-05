@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton, QFormLayout,
     QSizePolicy, QGroupBox, QSlider, QFrame, QProgressBar, QCheckBox,
+    QComboBox,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
@@ -223,17 +224,64 @@ class TmaxTab(QWidget):
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
+
+        # X-axis selection
+        ctrl_layout = QHBoxLayout()
+        ctrl_layout.setContentsMargins(10, 5, 10, 0)
+        self.combo_x = QComboBox()
+        self.combo_x.addItems(["Flux Linkage [Wb]", "Speed [rpm]"])
+        self.combo_x.currentIndexChanged.connect(self._redraw)
+        ctrl_layout.addWidget(QLabel("X-축 선택:"))
+        ctrl_layout.addWidget(self.combo_x)
+        ctrl_layout.addStretch()
+        layout.addLayout(ctrl_layout)
+
         fig = Figure(constrained_layout=True)
         self.ax = fig.add_subplot(111)
         self.canvas = MplCanvas(fig)
         layout.addWidget(self.canvas)
 
-    def update_plot(self, lam_grid, Tmax_LUT):
+        self.lam_grid = None
+        self.Tmax_LUT = None
+        self.p_ = None
+        self.Vdc = None
+
+    def update_plot(self, lam_grid, Tmax_LUT, p_=None, Vdc=None):
+        self.lam_grid = lam_grid
+        self.Tmax_LUT = Tmax_LUT
+        self.p_ = p_
+        self.Vdc = Vdc
+        self._redraw()
+
+    def _redraw(self):
+        if self.lam_grid is None or self.Tmax_LUT is None:
+            return
+
         self.ax.clear()
-        self.ax.plot(lam_grid, Tmax_LUT, 'b-o', ms=4, lw=1.8)
-        self.ax.set_xlabel("lam_max [Wb]")
+        
+        mode = self.combo_x.currentText()
+        if "Speed" in mode and self.p_ is not None and self.Vdc is not None:
+            # Convert lam_max to RPM
+            # lam_max = (alpha * Vdc) / (pp * omega_mech)
+            # omega_mech = rpm * 2 * pi / 60
+            # rpm = (alpha * Vdc * 60) / (lam_max * pp * 2 * pi)
+            Vmax = self.p_["alpha"] * self.Vdc
+            pp = self.p_["pole_pairs"]
+            x_data = (Vmax * 60.0) / (np.maximum(self.lam_grid, 1e-9) * pp * 2.0 * np.pi)
+            x_label = "Speed [rpm]"
+            title = "Max Torque vs Speed"
+            # Sort by speed for better plotting if necessary, but lam_grid is linear so x_data will be monotonic
+            idx = np.argsort(x_data)
+            self.ax.plot(x_data[idx], self.Tmax_LUT[idx], 'r-o', ms=4, lw=1.8)
+        else:
+            x_data = self.lam_grid
+            x_label = "lam_max [Wb]"
+            title = "Max Torque vs Flux Linkage Limit"
+            self.ax.plot(x_data, self.Tmax_LUT, 'b-o', ms=4, lw=1.8)
+
+        self.ax.set_xlabel(x_label)
         self.ax.set_ylabel("Tmax [Nm]")
-        self.ax.set_title("Max Torque vs Flux Linkage Limit")
+        self.ax.set_title(title)
         self.ax.grid(True, alpha=0.3)
         self.canvas.draw()
 
@@ -747,7 +795,7 @@ class MainWindow(QMainWindow):
         self.param_panel.on_done()
         self.tabs.setEnabled(True)
 
-        self.tmax_tab.update_plot(data["lam_grid"], data["Tmax_LUT"])
+        self.tmax_tab.update_plot(data["lam_grid"], data["Tmax_LUT"], p_=self.p_, Vdc=self.Vdc)
         self.lut_tab.update_plot(data["lam_grid"], data["Tratio_grid"],
                                  data["Id_LUT_2D"], data["Iq_LUT_2D"])
         self.sim_tab.init_bg(self.p_, data["Id_at_Tmax"], data["Iq_at_Tmax"])
