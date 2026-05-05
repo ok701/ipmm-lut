@@ -16,8 +16,9 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton, QFormLayout,
     QSizePolicy, QGroupBox, QSlider, QFrame, QProgressBar, QCheckBox,
-    QComboBox,
+    QComboBox, QDialog, QScrollArea, QDialogButtonBox,
 )
+
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 
@@ -218,6 +219,140 @@ class MplCanvas(FigureCanvas):
 # Right-side tab contents
 # =========================
 
+# =========================
+# Formula Help Dialog
+# =========================
+class FormulaHelpDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("수식 설명 — 최대토크 & 출력")
+        self.resize(600, 520)
+        self.setStyleSheet("""
+            QDialog { background: #FAFAFA; }
+            QLabel#title { font-size: 15px; font-weight: bold; color: #1565C0; }
+            QLabel#section { font-size: 12px; font-weight: bold; color: #0D47A1;
+                             margin-top: 12px; }
+            QLabel#body { font-size: 11px; color: #222; }
+            QLabel#formula { font-family: Courier New; font-size: 12px;
+                             background: #E3F2FD; border: 1px solid #90CAF9;
+                             border-radius: 4px; padding: 8px; color: #0D47A1; }
+            QLabel#note { font-size: 10px; color: #555; font-style: italic; }
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 8)
+
+        # ---- Header ----
+        header = QWidget()
+        header.setStyleSheet("background:#1565C0;")
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(16, 12, 16, 12)
+        icon_lbl = QLabel("❓")
+        icon_lbl.setStyleSheet("color:white; font-size:20px;")
+        title_lbl = QLabel("최대토크 & 출력 계산 수식")
+        title_lbl.setStyleSheet("color:white; font-size:14px; font-weight:bold;")
+        hl.addWidget(icon_lbl)
+        hl.addWidget(title_lbl)
+        hl.addStretch()
+        outer.addWidget(header)
+
+        # ---- Scrollable content ----
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        vl = QVBoxLayout(content)
+        vl.setContentsMargins(20, 12, 20, 12)
+        vl.setSpacing(6)
+
+        def section(text):
+            l = QLabel(text)
+            l.setObjectName("section")
+            return l
+
+        def body(text):
+            l = QLabel(text)
+            l.setObjectName("body")
+            l.setWordWrap(True)
+            return l
+
+        def formula(text):
+            l = QLabel(text)
+            l.setObjectName("formula")
+            l.setWordWrap(True)
+            return l
+
+        def note(text):
+            l = QLabel(text)
+            l.setObjectName("note")
+            l.setWordWrap(True)
+            return l
+
+        # --- Section 1: 전압 제한 ---
+        vl.addWidget(section("1. 전압 제한과 최대 자속 (Voltage Limit & λ_max)"))
+        vl.addWidget(body(
+            "인버터 출력 전압의 크기는 직류 링크 전압과 변조율 α에 의해 결정됩니다. "
+            "정상상태에서 전압 방정식을 무시하면, "
+            "최대 허용 자속(λ_max)은 최대 출력 전압을 전기 각속도로 나눈 값입니다."
+        ))
+        vl.addWidget(formula(
+            "V_max  = α × V_dc\n"
+            "ω_e   = P × ω_mech  = P × (rpm × 2π / 60)\n"
+            "λ_max  = V_max / ω_e   [Wb]"
+        ))
+        vl.addWidget(note(
+            "α: 인버터 전압 이용률 (공간벡터 변조 시 ≈ 1/√3 ≈ 0.577)\n"
+            "P: 극쌍수 (pole pairs)"
+        ))
+
+        # --- Section 2: Torque ---
+        vl.addWidget(section("2. 최대토크 (Max Torque)"))
+        vl.addWidget(body(
+            "주어진 λ_max 제약 하에서, 전류 제한원(Imax) 내의 (id, iq) 쌍 중 "
+            "발생 토크를 최대로 하는 점을 수치 최적화(SLSQP)로 구합니다. "
+            "토크 방정식은 IPMSM(내장형 영구자석 동기기) 기준입니다:"
+        ))
+        vl.addWidget(formula(
+            "Te = 1.5 × P × [ ψ_f × i_q + (L_d − L_q) × i_d × i_q ]  [Nm]\n\n"
+            "  최적화 문제:\n"
+            "  maximize  Te(id, iq)\n"
+            "  subject to\n"
+            "    id² + iq²  ≤  Imax²      (전류 제한)\n"
+            "    λ(id, iq)  ≤  λ_max      (전압/자속 제한)\n"
+            "    id ≤ 0,  iq ≥ 0"
+        ))
+        vl.addWidget(note(
+            "ψ_f: 영구자석 자속 [Wb]  |  L_d, L_q: d/q축 인덕턴스 [H]\n"
+            "λ(id,iq) = √( (ψ_f + L_d·id)² + (L_q·iq)² )"
+        ))
+
+        # --- Section 3: Power ---
+        vl.addWidget(section("3. 최대출력 (Max Power)"))
+        vl.addWidget(body(
+            "최대출력은 각 운전점의 최대토크에 해당 기계적 각속도를 곱하여 계산합니다. "
+            "X축이 '속도(rpm)' 모드일 때, 운전 속도와 해당 λ_max는 아래 역변환 관계로 연결됩니다:"
+        ))
+        vl.addWidget(formula(
+            "ω_mech = V_max / (λ_max × P)   [rad/s]\n"
+            "rpm    = ω_mech × 60 / (2π)\n\n"
+            "P_max  = T_max × ω_mech         [W]\n"
+            "       = T_max × ω_mech / 1000  [kW]"
+        ))
+        vl.addWidget(note(
+            "λ_max 그리드 값이 클수록 낮은 속도에 대응하며(역비례 관계),\n"
+            "플롯 시 속도 오름차순으로 정렬하여 표시합니다."
+        ))
+
+        vl.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+        # ---- Close button ----
+        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
+        btn_box.setContentsMargins(16, 0, 16, 0)
+        btn_box.rejected.connect(self.accept)
+        outer.addWidget(btn_box)
+
 class TmaxTab(QWidget):
     """최대토크 탭"""
     def __init__(self, parent=None):
@@ -234,10 +369,23 @@ class TmaxTab(QWidget):
         ctrl_layout.addWidget(QLabel("X-축 선택:"))
         ctrl_layout.addWidget(self.combo_x)
         ctrl_layout.addStretch()
+
+        # Help button
+        btn_help = QPushButton("❓ 수식 설명")
+        btn_help.setFixedHeight(26)
+        btn_help.setStyleSheet(
+            "QPushButton { background:#1565C0; color:white; border-radius:4px;"
+            " font-size:11px; padding: 0 10px; }"
+            "QPushButton:hover { background:#0D47A1; }"
+        )
+        btn_help.clicked.connect(self._show_help)
+        ctrl_layout.addWidget(btn_help)
+
         layout.addLayout(ctrl_layout)
 
         fig = Figure(constrained_layout=True)
-        self.ax = fig.add_subplot(111)
+        self.ax_t = fig.add_subplot(211)
+        self.ax_p = fig.add_subplot(212, sharex=self.ax_t)
         self.canvas = MplCanvas(fig)
         layout.addWidget(self.canvas)
 
@@ -257,33 +405,48 @@ class TmaxTab(QWidget):
         if self.lam_grid is None or self.Tmax_LUT is None:
             return
 
-        self.ax.clear()
+        self.ax_t.clear()
+        self.ax_p.clear()
         
+        Vmax = self.p_["alpha"] * self.Vdc
+        pp = self.p_["pole_pairs"]
+        
+        # Power calculation (P = T * omega_mech)
+        # omega_mech = Vmax / (lam_max * pp)
+        omega_mech = Vmax / (np.maximum(self.lam_grid, 1e-9) * pp)
+        power_w = self.Tmax_LUT * omega_mech
+        power_kw = power_w / 1000.0
+
         mode = self.combo_x.currentText()
         if "Speed" in mode and self.p_ is not None and self.Vdc is not None:
-            # Convert lam_max to RPM
-            # lam_max = (alpha * Vdc) / (pp * omega_mech)
-            # omega_mech = rpm * 2 * pi / 60
-            # rpm = (alpha * Vdc * 60) / (lam_max * pp * 2 * pi)
-            Vmax = self.p_["alpha"] * self.Vdc
-            pp = self.p_["pole_pairs"]
-            x_data = (Vmax * 60.0) / (np.maximum(self.lam_grid, 1e-9) * pp * 2.0 * np.pi)
+            x_data = (omega_mech * 60.0) / (2.0 * np.pi)
             x_label = "Speed [rpm]"
-            title = "Max Torque vs Speed"
-            # Sort by speed for better plotting if necessary, but lam_grid is linear so x_data will be monotonic
+            title = "Performance vs Speed"
             idx = np.argsort(x_data)
-            self.ax.plot(x_data[idx], self.Tmax_LUT[idx], 'r-o', ms=4, lw=1.8)
+            self.ax_t.plot(x_data[idx], self.Tmax_LUT[idx], 'r-o', ms=4, lw=1.8, label="Torque")
+            self.ax_p.plot(x_data[idx], power_kw[idx], 'g-o', ms=4, lw=1.8, label="Power")
         else:
             x_data = self.lam_grid
             x_label = "lam_max [Wb]"
-            title = "Max Torque vs Flux Linkage Limit"
-            self.ax.plot(x_data, self.Tmax_LUT, 'b-o', ms=4, lw=1.8)
+            title = "Performance vs Flux Linkage Limit"
+            self.ax_t.plot(x_data, self.Tmax_LUT, 'b-o', ms=4, lw=1.8, label="Torque")
+            self.ax_p.plot(x_data, power_kw, 'm-o', ms=4, lw=1.8, label="Power")
 
-        self.ax.set_xlabel(x_label)
-        self.ax.set_ylabel("Tmax [Nm]")
-        self.ax.set_title(title)
-        self.ax.grid(True, alpha=0.3)
+        self.ax_t.set_ylabel("Tmax [Nm]")
+        self.ax_t.set_title(title)
+        self.ax_t.grid(True, alpha=0.3)
+        self.ax_t.legend(fontsize=8)
+
+        self.ax_p.set_xlabel(x_label)
+        self.ax_p.set_ylabel("Power [kW]")
+        self.ax_p.grid(True, alpha=0.3)
+        self.ax_p.legend(fontsize=8)
+
         self.canvas.draw()
+
+    def _show_help(self):
+        dlg = FormulaHelpDialog(self)
+        dlg.exec_()
 
 
 class LutTab(QWidget):
