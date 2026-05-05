@@ -168,6 +168,7 @@ def solve_min_current_for_T_lam(Tref, lam_ref, p_, x0=None):
 # =========================
 class LutWorker(QThread):
     finished = pyqtSignal(object)
+    progress = pyqtSignal(int)  # 0-100
 
     def __init__(self, p_, parent=None):
         super().__init__(parent)
@@ -177,16 +178,28 @@ class LutWorker(QThread):
         p = self.p_
         N_lam = 20
         N_tref = 20
+        total_steps = N_lam + N_lam * N_tref  # phase1: N_lam, phase2: N_lam*N_tref
+        done = 0
+
         lam_upper = np.hypot(p["psi_f"] + p["Ld"] * p["Imax"],
                              p["Lq"] * p["Imax"]) * 1.05
-        # Use a low fixed floor so the trajectory covers most of the id-iq plane.
-        # Physically unreachable cells will be NaN and rendered transparently.
         lam_lower = lam_upper * 0.03
         lam_grid = np.linspace(lam_lower, lam_upper, N_lam)
         Tratio_grid = np.linspace(0.0, 0.999, N_tref)
 
-        Tmax_LUT, Id_at_Tmax, Iq_at_Tmax = build_part3_LUT(lam_grid, p)
+        # Phase 1: Tmax sweep
+        Tmax_LUT   = np.full_like(lam_grid, np.nan, dtype=float)
+        Id_at_Tmax = np.full_like(lam_grid, np.nan, dtype=float)
+        Iq_at_Tmax = np.full_like(lam_grid, np.nan, dtype=float)
+        for k, lm in enumerate(lam_grid):
+            Tmax, (id_opt, iq_opt) = solve_Tmax_for_lammax(float(lm), p)
+            Tmax_LUT[k]   = Tmax
+            Id_at_Tmax[k] = id_opt
+            Iq_at_Tmax[k] = iq_opt
+            done += 1
+            self.progress.emit(round(done / total_steps * 100))
 
+        # Phase 2: 2D LUT
         Id_LUT_2D = np.full((N_lam, N_tref), np.nan)
         Iq_LUT_2D = np.full((N_lam, N_tref), np.nan)
 
@@ -199,12 +212,17 @@ class LutWorker(QThread):
                 if ratio < 0.01:
                     Id_LUT_2D[i, j] = np.nan
                     Iq_LUT_2D[i, j] = np.nan
-                    continue
-                sol_ij, _ = solve_min_current_for_T_lam(
-                    Tref_ij, lam_max, p, x0=[id0_w, iq0_w])
-                if sol_ij is not None:
-                    Id_LUT_2D[i, j] = sol_ij[0]
-                    Iq_LUT_2D[i, j] = sol_ij[1]
+                else:
+                    sol_ij, _ = solve_min_current_for_T_lam(
+                        Tref_ij, lam_max, p, x0=[id0_w, iq0_w])
+                    if sol_ij is not None:
+                        Id_LUT_2D[i, j] = sol_ij[0]
+                        Iq_LUT_2D[i, j] = sol_ij[1]
+                done += 1
+                if (done % 5) == 0:
+                    self.progress.emit(round(done / total_steps * 100))
+
+        self.progress.emit(100)
 
         interp_id = RegularGridInterpolator(
             (lam_grid, Tratio_grid), Id_LUT_2D,
@@ -224,6 +242,130 @@ class LutWorker(QThread):
             "interp_id":   interp_id,
             "interp_iq":   interp_iq,
         })
+
+
+# =========================
+# Tab Overlay (Initial / Calculating)
+# =========================
+class TabOverlay(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("""
+            TabOverlay {
+                background-color: rgba(240, 245, 255, 220);
+            }
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addStretch(2)
+
+        # Card
+        card = QWidget()
+        card.setObjectName("card")
+        card.setStyleSheet(f"""
+            QWidget#card {{
+                background: white;
+                border-radius: {_S(16)}px;
+                border: 1px solid #D0DCF0;
+            }}
+        """)
+        card.setFixedWidth(_S(380))
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(_S(32), _S(32), _S(32), _S(32))
+        card_layout.setSpacing(_S(18))
+
+        # Icon label
+        self.icon_lbl = QLabel("⚙")
+        self.icon_lbl.setAlignment(Qt.AlignCenter)
+        self.icon_lbl.setStyleSheet(
+            f"font-size: {_FS(36)}px; color: #1565C0;"
+        )
+        card_layout.addWidget(self.icon_lbl)
+
+        # Main message
+        self.label = QLabel()
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setWordWrap(True)
+        self.label.setStyleSheet(
+            f"font-size: {_FS(14)}px; font-weight: bold; color: #1A237E;"
+        )
+        card_layout.addWidget(self.label)
+
+        # Sub message
+        self.sub_lbl = QLabel()
+        self.sub_lbl.setAlignment(Qt.AlignCenter)
+        self.sub_lbl.setWordWrap(True)
+        self.sub_lbl.setStyleSheet(
+            f"font-size: {_FS(10)}px; color: #78909C;"
+        )
+        card_layout.addWidget(self.sub_lbl)
+
+        # Progress container
+        self.prog_container = QWidget()
+        pc = QVBoxLayout(self.prog_container)
+        pc.setContentsMargins(0, 0, 0, 0)
+        pc.setSpacing(_S(6))
+
+        # Progress bar
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFixedHeight(_S(10))
+        self.progress.setTextVisible(False)
+        self.progress.setStyleSheet(f"""
+            QProgressBar {{
+                border: none;
+                border-radius: {_S(5)}px;
+                background: #E8EAF6;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #42A5F5, stop:1 #1565C0);
+                border-radius: {_S(5)}px;
+            }}
+        """)
+        pc.addWidget(self.progress)
+
+        # Percentage label
+        self.pct_lbl = QLabel("0%")
+        self.pct_lbl.setAlignment(Qt.AlignCenter)
+        self.pct_lbl.setStyleSheet(
+            f"font-size: {_FS(11)}px; font-weight: bold; color: #1565C0;"
+        )
+        pc.addWidget(self.pct_lbl)
+
+        card_layout.addWidget(self.prog_container)
+        self.prog_container.setVisible(False)
+
+        outer.addWidget(card, 0, Qt.AlignCenter)
+        outer.addStretch(3)
+
+    def show_idle(self):
+        self.icon_lbl.setText("⚙")
+        self.label.setText("모터 파라미터를 입력하고\nLUT 생성을 눌러주세요")
+        self.sub_lbl.setText("왼쪽 패널에서 모터 사양을 입력한 후 [ LUT 생성 ] 버튼을 눌러주세요")
+        self.prog_container.setVisible(False)
+        self.show()
+        self.raise_()
+
+    def show_calculating(self):
+        self.icon_lbl.setText("📡")
+        self.label.setText("LUT 데이터 계산 중...")
+        self.sub_lbl.setText("최적화 연산이 진행 중입니다. 잠시만 기다려주세요.")
+        self.progress.setValue(0)
+        self.pct_lbl.setText("0%")
+        self.prog_container.setVisible(True)
+        self.show()
+        self.raise_()
+
+    def set_progress(self, pct):
+        self.progress.setValue(pct)
+        self.pct_lbl.setText(f"{pct}%")
+
+    def update_geometry(self, rect):
+        self.setGeometry(rect)
 
 
 # =========================
@@ -706,8 +848,7 @@ class SimTab(QWidget):
 
         # ---- controls (left of sim tab) ----
         ctrl = QWidget()
-        ctrl.setMinimumWidth(_S(180))
-        ctrl.setMaximumWidth(_S(260))
+        ctrl.setFixedWidth(_S(220))
         vl = QVBoxLayout(ctrl)
         vl.setContentsMargins(6, 6, 6, 6)
         vl.setSpacing(12)
@@ -925,8 +1066,7 @@ class ParamPanel(QWidget):
 
     def __init__(self, p_init, Vdc_init, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(_S(200))
-        self.setMaximumWidth(_S(280))
+        self.setFixedWidth(_S(240))
         self._build_ui(p_init, Vdc_init)
 
     def _show_desc(self, text):
@@ -982,14 +1122,13 @@ class ParamPanel(QWidget):
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
-        self.progress.setFixedHeight(_S(10))
+        self.progress.setFixedHeight(_S(4))
         self.progress.setTextVisible(False)
+        self.progress.setStyleSheet(
+            f"QProgressBar {{ border: none; background: #E3F2FD; }}"
+            f"QProgressBar::chunk {{ background: #1565C0; }}"
+        )
         layout.addWidget(self.progress)
-
-        self.status_lbl = QLabel("")
-        self.status_lbl.setAlignment(Qt.AlignCenter)
-        self.status_lbl.setStyleSheet(f"color: #555; font-size: {_FS(10)}px;")
-        layout.addWidget(self.status_lbl)
 
         # Constant-torque checkbox
         self.chk_const_torque = QCheckBox("동토크 제어")
@@ -1036,13 +1175,11 @@ class ParamPanel(QWidget):
             return
         self.btn.setEnabled(False)
         self.progress.setVisible(True)
-        self.status_lbl.setText("계산 중…")
         self.rebuild_requested.emit(p, Vdc)
 
     def on_done(self):
         self.btn.setEnabled(True)
         self.progress.setVisible(False)
-        self.status_lbl.setText("✔ 완료")
 
 
 # =========================
@@ -1112,17 +1249,41 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tmax_tab, "최대토크")
         self.tabs.addTab(self.lut_tab,  "LUT")
         self.tabs.addTab(self.sim_tab,  "시뮬레이션")
-
         self.sim_tab.sim_changed.connect(self._refresh_sim)
-
         root.addWidget(self.tabs, stretch=1)
+
+        # Overlay for tabs — parented to central widget, covers tabs area
+        self.overlay = TabOverlay(central)
+        self.overlay.show_idle()
+        # Ensure correct initial position after layout has settled
+        central.layout().activate()
+        self.overlay.update_geometry(self.tabs.geometry())
+
+    def showEvent(self, event):
+        """Force overlay position once the window is actually shown."""
+        super().showEvent(event)
+        if hasattr(self, 'overlay') and hasattr(self, 'tabs'):
+            self.overlay.update_geometry(self.tabs.geometry())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Position the overlay exactly over the tabs area
+        # We use mapToParent to get the correct coordinates within 'central'
+        if hasattr(self, 'overlay') and hasattr(self, 'tabs'):
+            self.overlay.update_geometry(self.tabs.geometry())
 
     # ------------------------------------------------------------------
     def _on_rebuild_requested(self, p_new, Vdc_new):
         self.p_  = p_new
         self.Vdc = Vdc_new
         self.tabs.setEnabled(False)
+        
+        # Show "Calculating" overlay
+        self.overlay.show_calculating()
+        self.overlay.update_geometry(self.tabs.geometry())
+
         self._worker = LutWorker(self.p_)
+        self._worker.progress.connect(self.overlay.set_progress)
         self._worker.finished.connect(self._on_lut_done)
         self._worker.start()
 
@@ -1130,6 +1291,9 @@ class MainWindow(QMainWindow):
         self.lut_data = data
         self.param_panel.on_done()
         self.tabs.setEnabled(True)
+        
+        # Hide overlay
+        self.overlay.hide()
 
         self.tmax_tab.update_plot(data["lam_grid"], data["Tmax_LUT"], p_=self.p_, Vdc=self.Vdc)
         self.lut_tab.update_plot(data["lam_grid"], data["Tratio_grid"],
@@ -1170,6 +1334,7 @@ class MainWindow(QMainWindow):
         
         self.lut_data = full_data
         self.tabs.setEnabled(True)
+        self.overlay.hide()
         
         # Update all tabs
         self.tmax_tab.update_plot(lam_grid, Tmax_LUT, p_=self.p_, Vdc=self.Vdc)
