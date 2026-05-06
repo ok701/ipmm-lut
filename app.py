@@ -20,12 +20,17 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QGroupBox, QSlider, QFrame, QProgressBar, QCheckBox,
     QComboBox, QDialog, QScrollArea, QDialogButtonBox,
     QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem,
+    QButtonGroup, QStackedWidget
 )
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QCursor, QFontInfo
 
+import os
 # ----- High-DPI support -----
+os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "1"
+os.environ["QT_SCALE_FACTOR"] = "1"
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
 QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
@@ -199,8 +204,8 @@ class LutWorker(QThread):
 
     def run(self):
         p = self.p_
-        N_lam = 20
-        N_tref = 20
+        N_lam = int(p.get("n_grid", 50))
+        N_tref = int(p.get("n_grid", 50))
         total_steps = N_lam + N_lam * N_tref  # phase1: N_lam, phase2: N_lam*N_tref
         done = 0
 
@@ -298,7 +303,7 @@ class TabOverlay(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet("""
             TabOverlay {
-                background-color: rgba(240, 245, 255, 220);
+                background-color: #FFFFFF;
             }
         """)
 
@@ -312,7 +317,7 @@ class TabOverlay(QWidget):
         card.setStyleSheet(f"""
             QWidget#card {{
                 background: white;
-                border-radius: {_S(16)}px;
+                border-radius: {_S(12)}px;
                 border: 1px solid #D0DCF0;
             }}
         """)
@@ -321,20 +326,12 @@ class TabOverlay(QWidget):
         card_layout.setContentsMargins(_S(32), _S(32), _S(32), _S(32))
         card_layout.setSpacing(_S(18))
 
-        # Icon label
-        self.icon_lbl = QLabel("⚙")
-        self.icon_lbl.setAlignment(Qt.AlignCenter)
-        self.icon_lbl.setStyleSheet(
-            f"font-size: {_FS(36)}px; color: #1565C0;"
-        )
-        card_layout.addWidget(self.icon_lbl)
-
         # Main message
         self.label = QLabel()
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setWordWrap(True)
         self.label.setStyleSheet(
-            f"font-size: {_FS(14)}px; font-weight: bold; color: #1A237E;"
+            f"font-size: {_FS(13)}px; font-weight: bold; color: #1A237E; line-height: 1.5;"
         )
         card_layout.addWidget(self.label)
 
@@ -343,7 +340,7 @@ class TabOverlay(QWidget):
         self.sub_lbl.setAlignment(Qt.AlignCenter)
         self.sub_lbl.setWordWrap(True)
         self.sub_lbl.setStyleSheet(
-            f"font-size: {_FS(10)}px; color: #78909C;"
+            f"font-size: {_FS(10)}px; color: #607D8B; font-weight: normal;"
         )
         card_layout.addWidget(self.sub_lbl)
 
@@ -362,13 +359,13 @@ class TabOverlay(QWidget):
         self.progress.setStyleSheet(f"""
             QProgressBar {{
                 border: none;
-                border-radius: {_S(5)}px;
+                border-radius: {_S(6)}px;
                 background: #E8EAF6;
             }}
             QProgressBar::chunk {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #42A5F5, stop:1 #1565C0);
-                border-radius: {_S(5)}px;
+                    stop:0 #3949AB, stop:1 #1A237E);
+                border-radius: {_S(6)}px;
             }}
         """)
         pc.addWidget(self.progress)
@@ -377,7 +374,7 @@ class TabOverlay(QWidget):
         self.pct_lbl = QLabel("0%")
         self.pct_lbl.setAlignment(Qt.AlignCenter)
         self.pct_lbl.setStyleSheet(
-            f"font-size: {_FS(11)}px; font-weight: bold; color: #1565C0;"
+            f"font-size: {_FS(11)}px; font-weight: bold; color: #1A237E;"
         )
         pc.addWidget(self.pct_lbl)
 
@@ -388,17 +385,15 @@ class TabOverlay(QWidget):
         outer.addStretch(3)
 
     def show_idle(self):
-        self.icon_lbl.setText("⚙")
-        self.label.setText("모터 파라미터를 입력하고 LUT 생성을 눌러주세요")
-        self.sub_lbl.setText("파라미터에 대한 설명은 아래에서 확인하실 수 있습니다.")
+        self.label.setText("좌측 패널에 모터 파라미터를 입력하고\n[GENERATE LUT] 버튼을 눌러주세요.")
+        self.sub_lbl.setText("입력된 조건에 따라 전동기 특성 맵(LUT)이 생성됩니다.")
         self.prog_container.setVisible(False)
         self.show()
         self.raise_()
 
     def show_calculating(self):
-        self.icon_lbl.setText("📡")
-        self.label.setText("LUT 데이터 계산 중...")
-        self.sub_lbl.setText("최적화 연산이 진행 중입니다. 잠시만 기다려주세요.")
+        self.label.setText("최적화 연산 수행 중...")
+        self.sub_lbl.setText("입력된 파라미터를 기반으로 고정밀 LUT 데이터를 계산하고 있습니다.")
         self.progress.setValue(0)
         self.pct_lbl.setText("0%")
         self.prog_container.setVisible(True)
@@ -426,226 +421,166 @@ class MplCanvas(FigureCanvas):
 # Right-side tab contents
 # =========================
 
-# =========================
-# Formula Help Dialog
-# =========================
-class FormulaHelpDialog(QDialog):
-    def __init__(self, parent=None):
+class BaseHelpDialog(QDialog):
+    """도움말 다이얼로그 베이스 클래스 (미니멀 디자인)"""
+    def __init__(self, title, color, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("수식 설명 — 최대토크 & 출력")
-        self.resize(_S(600), _S(500))
+        self.setWindowTitle(title)
+        self.resize(_S(500), _S(450))
+        self.color = color
+        
         self.setStyleSheet(f"""
-            QDialog {{ background: #FAFAFA; }}
-            QLabel#title {{ font-size: {_FS(15)}px; font-weight: bold; color: #1565C0; }}
-            QLabel#section {{ font-size: {_FS(12)}px; font-weight: bold; color: #0D47A1;
-                             margin-top: {_S(12)}px; }}
-            QLabel#body {{ font-size: {_FS(11)}px; color: #222; }}
-            QLabel#formula {{ font-family: 'Consolas', 'Courier New'; font-size: {_FS(13)}px;
-                             background: #E3F2FD; border: 1px solid #90CAF9;
-                             border-radius: {_S(4)}px; padding: {_S(12)}px; color: #0D47A1; }}
-            QLabel#note {{ font-size: {_FS(10)}px; color: #555; font-style: italic; }}
+            QDialog {{ background: #FFFFFF; }}
+            QLabel#title {{ font-size: {_FS(13)}px; font-weight: bold; color: white; }}
+            QLabel#section {{ font-size: {_FS(10.5)}px; font-weight: bold; color: {color};
+                             border-bottom: 2px solid {color}; padding-bottom: 2px;
+                             margin-top: 15px; margin-bottom: 5px; }}
+            QLabel#body {{ font-size: {_FS(10.5)}px; color: #37474F; line-height: 1.5; }}
+            QLabel#formula {{ font-family: 'Consolas', 'Courier New'; font-size: {_FS(12)}px;
+                             background: #F8F9FA; border-left: 4px solid {color};
+                             padding: 10px; color: #263238; }}
         """)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 8)
-
-        # ---- Header ----
+        
+        self.outer = QVBoxLayout(self)
+        self.outer.setContentsMargins(0, 0, 0, 10)
+        
+        # Header
         header = QWidget()
-        header.setStyleSheet("background:#1565C0;")
+        header.setFixedHeight(_S(50))
+        header.setStyleSheet(f"background: {color};")
         hl = QHBoxLayout(header)
-        hl.setContentsMargins(16, 12, 16, 12)
-        icon_lbl = QLabel("❓")
-        icon_lbl.setStyleSheet(f"color:white; font-size:{_FS(20)}px;")
-        title_lbl = QLabel("최대토크 & 출력 계산 수식")
-        title_lbl.setStyleSheet(f"color:white; font-size:{_FS(14)}px; font-weight:bold;")
-        hl.addWidget(icon_lbl)
+        title_lbl = QLabel(title)
+        title_lbl.setObjectName("title")
         hl.addWidget(title_lbl)
         hl.addStretch()
-        outer.addWidget(header)
-
-        # ---- Scrollable content ----
+        self.outer.addWidget(header)
+        
+        # Content Area
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        content = QWidget()
-        vl = QVBoxLayout(content)
-        vl.setContentsMargins(20, 12, 20, 12)
-        vl.setSpacing(6)
-
-        def section(text):
-            l = QLabel(text)
-            l.setObjectName("section")
-            return l
-
-        def body(text):
-            l = QLabel(text)
-            l.setObjectName("body")
-            l.setWordWrap(True)
-            return l
-
-        def formula(text):
-            l = QLabel(text)
-            l.setObjectName("formula")
-            l.setWordWrap(True)
-            return l
-
-        def note(text):
-            l = QLabel(text)
-            l.setObjectName("note")
-            l.setWordWrap(True)
-            return l
-
-        # --- Section 1: 전압 제한 ---
-        vl.addWidget(section("1. 전압 제한과 최대 자속 (Voltage Limit & \u03bb\u2098\u2090\u2093)"))
-        vl.addWidget(body(
-            "인버터 출력 전압의 크기는 직류 링크 전압과 변조율 \u03b1에 의해 결정됩니다. "
-            "정상상태에서 전압 방정식을 무시하면, "
-            "최대 허용 자속(\u03bb\u2098\u2090\u2093)은 최대 출력 전압을 전기 각속도로 나눈 값입니다."
-        ))
-        vl.addWidget(formula(
-            "V\u2098\u2090\u2093 = \u03b1 \u00d7 V_dc\n"
-            "\u03c9_e = P \u00d7 \u03c9\u2098\u2091\u2092\u2095 = P \u00d7 (rpm \u00d7 2\u03c0 / 60)\n"
-            "\u03bb\u2098\u2090\u2093 = V\u2098\u2090\u2093 / \u03c9_e  [Wb]"
-        ))
-        vl.addWidget(note(
-            "\u03b1: 인버터 전압 이용률 (공간벡터 변조 시 \u2248 1/\u221a3 \u2248 0.577)\n"
-            "P: 극쌍수 (pole pairs)"
-        ))
-
-        # --- Section 2: Torque ---
-        vl.addWidget(section("2. 최대토크 (Max Torque)"))
-        vl.addWidget(body(
-            "주어진 \u03bb\u2098\u2090\u2093 제약 하에서, 전류 제한원(I\u2098\u2090\u2093) 내의 (i_d, i_q) 쌍 중 "
-            "발생 토크를 최대로 하는 점을 수치 최적화(SLSQP)로 구합니다."
-        ))
-        vl.addWidget(formula(
-            "T_e = 1.5 \u00d7 P \u00d7 [ \u03c8_f \u00d7 i_q + (L_d \u2212 L_q) \u00d7 i_d \u00d7 i_q ]  [Nm]\n\n"
-            "  \u2022 최적화 문제:\n"
-            "    maximize  T_e(i_d, i_q)\n"
-            "    subject to\n"
-            "      i_d\u00b2 + i_q\u00b2 \u2264 I\u2098\u2090\u2093\u00b2\n"
-            "      \u03bb(i_d, i_q) \u2264 \u03bb\u2098\u2090\u2093\n"
-            "      i_d \u2264 0,  i_q \u2265 0"
-        ))
-        vl.addWidget(note(
-            "\u03c8_f: 영구자석 자속 [Wb] | L_d, L_q: 인덕턴스 [H]\n"
-            "\u03bb(i_d, i_q) = \u221a( (\u03c8_f + L_d\u00b7i_d)\u00b2 + (L_q\u00b7i_q)\u00b2 )"
-        ))
-
-        # --- Section 3: Power ---
-        vl.addWidget(section("3. 최대출력 (Max Power)"))
-        vl.addWidget(body(
-            "최대출력은 각 운전점의 최대토크에 기계적 각속도를 곱하여 계산합니다."
-        ))
-        vl.addWidget(formula(
-            "\u03c9\u2098\u2091\u2092\u2095 = V\u2098\u2090\u2093 / (\u03bb\u2098\u2090\u2093 \u00d7 P)  [rad/s]\n"
-            "rpm = \u03c9\u2098\u2091\u2092\u2095 \u00d7 60 / (2\u03c0)\n\n"
-            "P\u2098\u2090\u2093 = T\u2098\u2090\u2093 \u00d7 \u03c9\u2098\u2091\u2092\u2095  [W]"
-        ))
-
-        vl.addStretch()
-        scroll.setWidget(content)
-        outer.addWidget(scroll)
-
+        self.content_container = QWidget()
+        self.vl = QVBoxLayout(self.content_container)
+        self.vl.setContentsMargins(20, 10, 20, 20)
+        scroll.setWidget(self.content_container)
+        self.outer.addWidget(scroll)
+        
+        # Close Button
         btn_box = QDialogButtonBox(QDialogButtonBox.Close)
-        btn_box.setContentsMargins(16, 0, 16, 0)
+        btn_box.setContentsMargins(15, 0, 15, 0)
         btn_box.rejected.connect(self.accept)
-        outer.addWidget(btn_box)
+        self.outer.addWidget(btn_box)
 
-class LutHelpDialog(QDialog):
+    def add_section(self, title):
+        l = QLabel(title); l.setObjectName("section"); self.vl.addWidget(l); return l
+    def add_body(self, text):
+        l = QLabel(text); l.setObjectName("body"); l.setWordWrap(True); self.vl.addWidget(l); return l
+    def add_formula(self, text):
+        l = QLabel(text); l.setObjectName("formula"); l.setWordWrap(True); self.vl.addWidget(l); return l
+
+class FormulaHelpDialog(BaseHelpDialog):
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("수식 설명 — LUT 생성 및 저토크")
-        self.resize(_S(600), _S(420))
-        self.setStyleSheet(f"""
-            QDialog {{ background: #FAFAFA; }}
-            QLabel#section {{ font-size: {_FS(12)}px; font-weight: bold; color: #0D47A1; margin-top: {_S(12)}px; }}
-            QLabel#body {{ font-size: {_FS(11)}px; color: #222; }}
-            QLabel#formula {{ font-family: 'Consolas', 'Courier New'; font-size: {_FS(13)}px;
-                             background: #F1F8E9; border: 1px solid #C5E1A5;
-                             border-radius: {_S(4)}px; padding: {_S(12)}px; color: #33691E; }}
-            QLabel#note {{ font-size: {_FS(10)}px; color: #555; font-style: italic; }}
-        """)
+        super().__init__("수식 설명 — 최대토크 & 출력", "#1A237E", parent)
+        self.add_section("1. 전압 제한과 최대 자속 (&lambda;<sub>max</sub>)")
+        self.add_body("인버터 최대 출력 전압과 회전 속도에 의해 최대 허용 자속이 결정됩니다.")
+        self.add_formula(
+            "<i>V</i><sub>max</sub> = &alpha; &times; <i>V</i><sub>dc</sub><br>"
+            "&lambda;<sub>max</sub> = <i>V</i><sub>max</sub> / &omega;<sub>e</sub>  [Wb]"
+        )
+        self.add_section("2. 최대토크 (Max Torque)")
+        self.add_body("전류 제한과 자속 제한 내에서 토크를 극대화하는 (id, iq)를 수치 최적화로 구합니다.")
+        self.add_formula(
+            "<i>T<sub>e</sub></i> = 1.5 &times; <i>P</i> &times; [ &psi;<sub>f</sub> &times; <i>i<sub>q</sub></i> + (<i>L<sub>d</sub></i> &minus; <i>L<sub>q</sub></i>) &times; <i>i<sub>d</sub></i> &times; <i>i<sub>q</sub></i> ]"
+        )
+        self.vl.addStretch()
 
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 8)
+class LutHelpDialog(BaseHelpDialog):
+    def __init__(self, parent=None):
+        super().__init__("도움말 — LUT 생성 및 제어", "#2E7D32", parent)
+        self.add_section("1. 전 영역 LUT 생성")
+        self.add_body("지령 토크 비율(T_ratio)에 대해 동손을 최소화하는 운전점을 검색합니다.")
+        self.add_formula(
+            "Minimize &radic;(<i>i<sub>d</sub></i><sup>2</sup> + <i>i<sub>q</sub></i><sup>2</sup>)<br>"
+            "Subject to: <i>T<sub>e</sub></i>(<i>i<sub>d</sub></i>, <i>i<sub>q</sub></i>) = <i>T<sub>ref</sub></i>"
+        )
+        self.vl.addStretch()
 
-        header = QWidget(); header.setStyleSheet("background:#2E7D32;")
-        hl = QHBoxLayout(header); hl.setContentsMargins(16, 12, 16, 12)
-        icon_lbl = QLabel("📖"); icon_lbl.setStyleSheet(f"color:white; font-size:{_FS(20)}px;")
-        title_lbl = QLabel("LUT 생성 및 무부하 제어 수식"); title_lbl.setStyleSheet(f"color:white; font-size:{_FS(14)}px; font-weight:bold;")
-        hl.addWidget(icon_lbl); hl.addWidget(title_lbl); hl.addStretch()
-        outer.addWidget(header)
-
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
-        content = QWidget(); vl = QVBoxLayout(content); vl.setContentsMargins(20, 12, 20, 12); vl.setSpacing(10)
-
-        def section(text): l = QLabel(text); l.setObjectName("section"); return l
-        def body(text): l = QLabel(text); l.setObjectName("body"); l.setWordWrap(True); return l
-        def formula(text): l = QLabel(text); l.setObjectName("formula"); l.setWordWrap(True); return l
-        def note(text): l = QLabel(text); l.setObjectName("note"); l.setWordWrap(True); return l
-
-        # --- Section: LUT Optimization ---
-        vl.addWidget(section("1. 전 영역 LUT 생성 (Minimum Current Search)"))
-        vl.addWidget(body("주어진 자속 제약 \u03bb\u2098\u2090\u2093와 지령 토크 비율 T_ratio에 대해 전류 크기를 최소화하는 운전점을 찾습니다."))
-        vl.addWidget(formula(
-            "T_ref = T_ratio \u00d7 T\u2098\u2090\u2093(\u03bb\u2098\u2090\u2093)\n\n"
-            "Minimize \u221a(i_d\u00b2 + i_q\u00b2)\n"
-            "Subject to:\n"
-            "  T_e(i_d, i_q) = T_ref\n"
-            "  \u03bb(i_d, i_q) \u2264 \u03bb\u2098\u2090\u2093"
-        ))
-
-        # --- Section: Zero Torque ---
-        vl.addWidget(section("2. 무부하 및 저토크 (Zero-Torque & Low-Torque)"))
-        vl.addWidget(body("무부하(T=0) 운전 시에도 고속 영역에서는 전압 제한을 위해 약자속 전류 주입이 필요합니다."))
-        vl.addWidget(formula(
-            "If \u03bb\u2098\u2090\u2093 \u2265 \u03c8_f (정상 영역):\n"
-            "  i_d = 0,  i_q = 0\n\n"
-            "Else (\uc57d\uc790\uc18d \uc601\uc5ed):\n"
-            "  i_d = (\u03bb\u2098\u2090\u2093 \u2212 \u03c8_f) / L_d\n"
-            "  i_q = 0"
-        ))
-        vl.addWidget(note("이 해석적 해는 저토크 구간 수치 최적화의 초기값(x0)으로 사용되어 연산 안정성을 확보합니다."))
-
-        vl.addStretch()
-        scroll.setWidget(content)
-        outer.addWidget(scroll)
-
-        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
-        btn_box.setContentsMargins(16, 0, 16, 0)
-        btn_box.rejected.connect(self.accept)
-        outer.addWidget(btn_box)
+class SimHelpDialog(BaseHelpDialog):
+    def __init__(self, parent=None):
+        super().__init__("도움말 — 실시간 시뮬레이션", "#455A64", parent)
+        self.add_section("업데이트 중...")
+        self.add_body("시뮬레이션 관련 수식 및 상세 설명은 다음 업데이트에서 제공될 예정입니다.")
+        self.vl.addStretch()
 
 class TmaxTab(QWidget):
     """최대토크 탭"""
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(8, 8, 8, 4)
+        layout.setSpacing(6)
 
         self.mode = "Flux Linkage [Wb]"
 
-        # Help button
-        ctrl_layout = QHBoxLayout()
-        ctrl_layout.setContentsMargins(10, 5, 10, 0)
-        ctrl_layout.addStretch()
-        btn_help = QPushButton("❓ 수식 설명")
-        btn_help.setFixedHeight(_S(26))
-        btn_help.setStyleSheet(
-            f"QPushButton {{ background:#1565C0; color:white; border-radius:{_S(4)}px;"
-            f" font-size:{_FS(11)}px; padding: 0 {_S(10)}px; }}"
-            "QPushButton:hover { background:#0D47A1; }"
-        )
-        btn_help.clicked.connect(self._show_help)
-        ctrl_layout.addWidget(btn_help)
-        layout.addLayout(ctrl_layout)
 
-        fig = Figure(constrained_layout=True)
+
+        # ── 결과 요약 카드 행 ──────────────────────────────────
+        card_row = QHBoxLayout()
+        card_row.setSpacing(8)
+
+        card_ss = (
+            "QWidget { background:#FFFFFF; border:1px solid #CFD8DC;"
+            f" border-radius:{_S(12)}px; }}"
+        )
+        val_main_ss = f"font-size:{_FS(18)}px; font-weight:bold; color:#1A237E; border:none;" 
+        val_unit_ss = f"font-size:{_FS(10.5)}px; font-weight:500; color:#607D8B; border:none;"
+        lbl_ss  = f"font-size:{_FS(9)}px; color:#546E7A; font-weight:bold; border:none; text-transform:uppercase; letter-spacing:0.5px;"
+
+        def make_card(title):
+            w = QWidget()
+            w.setStyleSheet(card_ss)
+            hl_main = QHBoxLayout(w)
+            hl_main.setContentsMargins(_S(16), _S(8), _S(16), _S(8))
+            hl_main.setSpacing(_S(12))
+            
+            lbl = QLabel(title)
+            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            lbl.setStyleSheet(lbl_ss)
+            
+            hl_main.addWidget(lbl)
+            hl_main.addStretch()
+            
+            val_main = QLabel("—")
+            val_main.setStyleSheet(val_main_ss)
+            val_unit = QLabel("")
+            val_unit.setStyleSheet(val_unit_ss)
+            
+            hl_main.addWidget(val_main)
+            hl_main.addWidget(val_unit)
+            
+            return w, val_main, val_unit
+
+        c1, self.card_t_val, self.card_t_unit = make_card("MAX TORQUE")
+        c2, self.card_p_val, self.card_p_unit = make_card("MAX POWER")
+
+        for c in [c1, c2]:
+            card_row.addWidget(c, 1)
+        layout.addLayout(card_row)
+
+
+
+        fig = Figure(tight_layout=True)
+        # 그래프 배경색 설정
+        fig.patch.set_facecolor('#F8F9FA')
         self.ax_t = fig.add_subplot(211)
         self.ax_p = fig.add_subplot(212, sharex=self.ax_t)
         self.canvas = MplCanvas(fig)
-        layout.addWidget(self.canvas)
+        
+        # 캔버스 주변 여백 및 배경 스타일
+        canvas_layout = QHBoxLayout()
+        canvas_layout.setContentsMargins(0, 4, 0, 0)
+        canvas_layout.addWidget(self.canvas)
+        layout.addLayout(canvas_layout)
 
         self.lam_grid = None
         self.Tmax_LUT = None
@@ -657,7 +592,37 @@ class TmaxTab(QWidget):
         self.Tmax_LUT = Tmax_LUT
         self.p_ = p_
         self.Vdc = Vdc
+        self._update_summary()
         self._redraw()
+
+    def _update_summary(self):
+        if self.lam_grid is None or self.p_ is None:
+            return
+        Vmax = self.p_["alpha"] * self.Vdc
+        pp   = self.p_["pole_pairs"]
+        omega_mech = Vmax / (np.maximum(self.lam_grid, 1e-9) * pp)
+        power_w = self.Tmax_LUT * omega_mech
+
+        valid = np.isfinite(self.Tmax_LUT) & np.isfinite(power_w)
+        Tmax_peak = float(np.nanmax(self.Tmax_LUT[valid])) if valid.any() else float("nan")
+        Pmax_peak = float(np.nanmax(power_w[valid])) if valid.any() else float("nan")
+        rpm_max   = self.p_.get("rpm_max", float("nan"))
+        alpha     = self.p_["alpha"]
+        vlim_label = "SVPWM" if abs(alpha - 1/3**0.5) < 0.01 else "Conservative"
+
+        if np.isfinite(Tmax_peak):
+            self.card_t_val.setText(f"{Tmax_peak:.1f}")
+            self.card_t_unit.setText("Nm")
+        else:
+            self.card_t_val.setText("—")
+            self.card_t_unit.setText("")
+
+        if np.isfinite(Pmax_peak):
+            self.card_p_val.setText(f"{Pmax_peak/1000:.1f}")
+            self.card_p_unit.setText("kW")
+        else:
+            self.card_p_val.setText("—")
+            self.card_p_unit.setText("")
 
     def set_xaxis_mode(self, mode):
         self.mode = mode
@@ -670,11 +635,19 @@ class TmaxTab(QWidget):
         self.ax_t.clear()
         self.ax_p.clear()
         
+        # 그래프 스타일: 현대적이고 전문적인 느낌 (은은한 그리드, 부드러운 색상)
+        for ax in [self.ax_t, self.ax_p]:
+            ax.set_facecolor('#FFFFFF')
+            # 그리드 투명도 높여 은은하게
+            ax.grid(True, alpha=0.1, linestyle='-', color='#455A64')
+            for spine in ax.spines.values():
+                spine.set_edgecolor('#CFD8DC')
+                spine.set_linewidth(1.0)
+            ax.tick_params(colors='#546E7A', labelsize=8)
+
         Vmax = self.p_["alpha"] * self.Vdc
         pp = self.p_["pole_pairs"]
         
-        # Power calculation (P = T * omega_mech)
-        # omega_mech = Vmax / (lam_max * pp)
         omega_mech = Vmax / (np.maximum(self.lam_grid, 1e-9) * pp)
         power_w = self.Tmax_LUT * omega_mech
         power_kw = power_w / 1000.0
@@ -682,32 +655,24 @@ class TmaxTab(QWidget):
         if "Speed" in self.mode and self.p_ is not None and self.Vdc is not None:
             x_data = (omega_mech * 60.0) / (2.0 * np.pi)
             x_label = "Speed [rpm]"
-            title = "Performance vs Speed"
             idx = np.argsort(x_data)
-            self.ax_t.plot(x_data[idx], self.Tmax_LUT[idx], 'r-o', ms=4, lw=1.8, label="Torque")
-            self.ax_p.plot(x_data[idx], power_kw[idx], 'g-o', ms=4, lw=1.8, label="Power")
+            self.ax_t.plot(x_data[idx], self.Tmax_LUT[idx], color='#E53935', marker='o', ms=2, lw=1.5, label="Torque [Nm]")
+            self.ax_p.plot(x_data[idx], power_kw[idx], color='#1A237E', marker='o', ms=2, lw=1.5, label="Power [kW]")
         else:
             x_data = self.lam_grid
-            x_label = "lam_max [Wb]"
-            title = "Performance vs Flux Linkage Limit"
-            self.ax_t.plot(x_data, self.Tmax_LUT, 'b-o', ms=4, lw=1.8, label="Torque")
-            self.ax_p.plot(x_data, power_kw, 'm-o', ms=4, lw=1.8, label="Power")
+            x_label = "Flux Linkage Limit [Wb]"
+            self.ax_t.plot(x_data, self.Tmax_LUT, color='#E53935', marker='o', ms=2, lw=1.5, label="Torque [Nm]")
+            self.ax_p.plot(x_data, power_kw, color='#1A237E', marker='o', ms=2, lw=1.5, label="Power [kW]")
 
-        self.ax_t.set_ylabel("Tmax [Nm]")
-        self.ax_t.set_title(title)
-        self.ax_t.grid(True, alpha=0.3)
-        self.ax_t.legend(fontsize=8)
+        self.ax_t.set_ylabel("Torque [Nm]", fontsize=9, fontweight='normal', color='#263238')
+        self.ax_t.legend(fontsize=8, frameon=True, framealpha=0.95, facecolor='white', edgecolor='#ECEFF1')
 
-        self.ax_p.set_xlabel(x_label)
-        self.ax_p.set_ylabel("Power [kW]")
-        self.ax_p.grid(True, alpha=0.3)
-        self.ax_p.legend(fontsize=8)
+        self.ax_p.set_xlabel(x_label, fontsize=9, fontweight='normal', color='#263238')
+        self.ax_p.set_ylabel("Power [kW]", fontsize=9, fontweight='normal', color='#263238')
+        self.ax_p.legend(fontsize=8, frameon=True, framealpha=0.95, facecolor='white', edgecolor='#ECEFF1')
 
         self.canvas.draw()
 
-    def _show_help(self):
-        dlg = FormulaHelpDialog(self)
-        dlg.exec_()
 
 
 class LutTab(QWidget):
@@ -724,56 +689,106 @@ class LutTab(QWidget):
         self.p_ = None
         self.Vdc = None
         
-        # ---- Control Bar ----
-        ctrl_layout = QHBoxLayout()
-        ctrl_layout.setContentsMargins(_S(10), _S(5), _S(10), _S(5))
-        
-        self.btn_import = QPushButton("📥 LUT 가져오기 (CSV/JSON)")
-        self.btn_import.setFixedHeight(_S(30))
-        self.btn_import.clicked.connect(self._on_import_clicked)
-        
-        self.btn_export = QPushButton("📤 LUT 내보내기")
-        self.btn_export.setFixedHeight(_S(30))
-        self.btn_export.clicked.connect(self._on_export_clicked)
-        
-        btn_help = QPushButton("❓ 수식 설명")
-        btn_help.setFixedHeight(_S(30))
-        btn_help.setStyleSheet(
-            f"QPushButton {{ background:#2E7D32; color:white; border-radius:{_S(4)}px;"
-            f" font-size:{_FS(11)}px; padding: 0 {_S(10)}px; }}"
-            "QPushButton:hover { background:#1B5E20; }"
-        )
-        btn_help.clicked.connect(self._show_help)
+        # (이전 버튼 위치에서 제거)
 
-        ctrl_layout.addWidget(self.btn_import)
-        ctrl_layout.addWidget(self.btn_export)
-        ctrl_layout.addStretch()
-        ctrl_layout.addWidget(btn_help)
-        layout.addLayout(ctrl_layout)
-
-        # ---- Sub Tabs ----
-        self.sub_tabs = QTabWidget()
-
+        # ---- Segmented Toggle Switch ----
+        seg_layout = QHBoxLayout()
+        seg_layout.setAlignment(Qt.AlignCenter)
+        seg_layout.setContentsMargins(0, _S(10), 0, _S(10))
+        seg_layout.setSpacing(0)
         
-        # Plot Tab
+        self.btn_group = QButtonGroup(self)
+        self.btn_3d = QPushButton("3D 그래프")
+        self.btn_tbl = QPushButton("데이터 테이블")
+        
+        self.btn_3d.setObjectName("segBtnLeft")
+        self.btn_tbl.setObjectName("segBtnRight")
+        
+        r = _S(16)
+        # 탭 전체에 적용되는 스타일시트 (Pill 형태 구현)
+        self.setStyleSheet(f"""
+            QPushButton#segBtnLeft {{
+                border-top-left-radius: {r}px; border-bottom-left-radius: {r}px;
+                border-top-right-radius: 0px; border-bottom-right-radius: 0px;
+                border-right: none;
+            }}
+            QPushButton#segBtnRight {{
+                border-top-right-radius: {r}px; border-bottom-right-radius: {r}px;
+                border-top-left-radius: 0px; border-bottom-left-radius: 0px;
+                border-left: none;
+            }}
+            QPushButton#segBtnLeft:checked, QPushButton#segBtnRight:checked {{
+                background: #1A237E; color: white; font-weight: bold;
+                border: 1px solid #1A237E;
+            }}
+            QPushButton#segBtnLeft:!checked, QPushButton#segBtnRight:!checked {{
+                background: #FFFFFF; color: #546E7A; font-weight: bold;
+                border: 1px solid #CFD8DC;
+            }}
+        """)
+        
+        for idx, b in enumerate([self.btn_3d, self.btn_tbl]):
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(_S(32))
+            b.setFixedWidth(_S(150))
+            self.btn_group.addButton(b, idx)
+            seg_layout.addWidget(b)
+            
+        self.btn_3d.setChecked(True)
+        self.btn_group.idClicked.connect(lambda idx: self.stack.setCurrentIndex(idx))
+        layout.addLayout(seg_layout)
+
+        # ---- Stacked Content ----
+        self.stack = QStackedWidget()
+        
+        # Plot Container
         self.plot_container = QWidget()
         pl = QVBoxLayout(self.plot_container)
         pl.setContentsMargins(0, 0, 0, 0)
-        self._fig = Figure(figsize=(_S(12), _S(5)))
+        self._fig = Figure(figsize=(_S(12), _S(7)))
         self.canvas = MplCanvas(self._fig)
         pl.addWidget(self.canvas)
-        self.sub_tabs.addTab(self.plot_container, "3D 그래프")
+        self.stack.addWidget(self.plot_container)
         
-        # Table Tab
+        # Table Container
         self.table_container = QWidget()
         tl = QVBoxLayout(self.table_container)
+        tl.setContentsMargins(0, 0, 0, 0)
         self.table = QTableWidget()
         self.table.setAlternatingRowColors(True)
         self.table.setStyleSheet(f"font-size: {_FS(9)}px;")
         tl.addWidget(self.table)
-        self.sub_tabs.addTab(self.table_container, "데이터 테이블")
+        self.stack.addWidget(self.table_container)
         
-        layout.addWidget(self.sub_tabs)
+        layout.addWidget(self.stack, 1)
+        
+        # ---- Bottom Action Bar ----
+        footer_layout = QHBoxLayout()
+        footer_layout.setContentsMargins(_S(10), _S(10), _S(10), _S(10))
+        footer_layout.setSpacing(_S(12))
+        
+        self.btn_import = QPushButton("LUT Import")
+        self.btn_export = QPushButton("LUT Export")
+        
+        btn_ss = (
+            f"QPushButton {{ background:transparent; color:#1A237E; border:1px solid #1A237E;"
+            f" border-radius:{_S(6)}px; font-weight:bold; font-size:{_FS(10.5)}px; padding: {_S(6)}px {_S(14)}px; }}"
+            "QPushButton:hover { background:#E8F0FE; }"
+            "QPushButton:pressed { background:#D2E3FC; }"
+        )
+        
+        for b in [self.btn_import, self.btn_export]:
+            b.setFixedHeight(_S(32))
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(btn_ss)
+            footer_layout.addWidget(b)
+            
+        self.btn_import.clicked.connect(self._on_import_clicked)
+        self.btn_export.clicked.connect(self._on_export_clicked)
+        
+        footer_layout.addStretch()
+        layout.addLayout(footer_layout)
         
         self._init_3d_axes()
         
@@ -952,9 +967,7 @@ class LutTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "오류", f"파일 저장 중 오류가 발생했습니다:\n{str(e)}")
 
-    def _show_help(self):
-        dlg = LutHelpDialog(self)
-        dlg.exec_()
+
 
     def update_trajectory(self, lam_grid, Id_at_Tmax, Iq_at_Tmax, p_=None, Vdc=None):
         """MTPA/MTPV mode: show MTPV surface extruded along T_ratio (3D)."""
@@ -1025,63 +1038,131 @@ class SimTab(QWidget):
         ctrl = QWidget()
         ctrl.setFixedWidth(_S(220))
         vl = QVBoxLayout(ctrl)
-        vl.setContentsMargins(6, 6, 6, 6)
-        vl.setSpacing(12)
+        vl.setContentsMargins(_S(6), _S(20), _S(6), _S(20))
+        vl.setSpacing(_S(16))
+        
+        vl.addStretch()
 
-        grp_rpm = QGroupBox("회전수 [rpm]")
-        gl = QVBoxLayout(grp_rpm)
-        self.lbl_rpm = QLabel("3000 rpm")
-        self.lbl_rpm.setAlignment(Qt.AlignCenter)
-        self.sl_rpm = QSlider(Qt.Horizontal)
-        self.sl_rpm.setRange(100, 6000)
-        self.sl_rpm.setValue(3000)
-        self.sl_rpm.setTickInterval(500)
-        self.sl_rpm.setTickPosition(QSlider.TicksBelow)
-        self.sl_rpm.valueChanged.connect(self._on_change)
-        gl.addWidget(self.lbl_rpm)
-        gl.addWidget(self.sl_rpm)
-        vl.addWidget(grp_rpm)
-
-        grp_t = QGroupBox("토크 지령 Tref [Nm]")
-        gl2 = QVBoxLayout(grp_t)
-        self.lbl_tref = QLabel("2.0 Nm")
-        self.lbl_tref.setAlignment(Qt.AlignCenter)
-        self.sl_tref = QSlider(Qt.Horizontal)
-        self.sl_tref.setRange(0, 500)   # 0 ~ 50.0 Nm (×0.1)
-        self.sl_tref.setValue(20)
-        self.sl_tref.setTickInterval(50)
-        self.sl_tref.setTickPosition(QSlider.TicksBelow)
-        self.sl_tref.valueChanged.connect(self._on_change)
-        gl2.addWidget(self.lbl_tref)
-        gl2.addWidget(self.sl_tref)
-        vl.addWidget(grp_t)
-
-
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        vl.addWidget(sep)
-
+        # 1) 동작점 결과 (상단 배치)
         res_title = QLabel("동작점 결과")
-        res_title.setFont(QFont("Arial", _FS(9), QFont.Bold))
+        res_title.setFont(QFont("Segoe UI", _FS(9), QFont.Bold))
+        res_title.setStyleSheet("color:#546E7A; margin-bottom:2px;")
         vl.addWidget(res_title)
 
-        form = QFormLayout()
-        form.setSpacing(6)
+        res_box = QWidget()
+        res_box.setStyleSheet(f"""
+            QWidget {{ background: #F5F7FA; border: 1px solid #CFD8DC; border-radius: {_S(8)}px; }}
+            QLabel {{ background: transparent; border: none; font-size: {_FS(10.5)}px; }}
+        """)
+        rl = QVBoxLayout(res_box)
+        rl.setContentsMargins(_S(12), _S(12), _S(12), _S(12))
+        rl.setSpacing(_S(8))
+
         self.lbl_id_op  = QLabel("—")
         self.lbl_iq_op  = QLabel("—")
         self.lbl_te_op  = QLabel("—")
         self.lbl_lam_op = QLabel("—")
         self.lbl_tmax   = QLabel("—")
-        for lbl in [self.lbl_id_op, self.lbl_iq_op,
-                    self.lbl_te_op, self.lbl_lam_op, self.lbl_tmax]:
-            lbl.setFont(QFont("Courier", _FS(9)))
-        form.addRow("id* [A]",    self.lbl_id_op)
-        form.addRow("iq* [A]",    self.lbl_iq_op)
-        form.addRow("Te [Nm]",    self.lbl_te_op)
-        form.addRow("λ_max [Wb]", self.lbl_lam_op)
-        form.addRow("Tmax [Nm]",  self.lbl_tmax)
-        vl.addLayout(form)
+        
+        def add_res_row(label, val_lbl):
+            row = QHBoxLayout()
+            lbl_name = QLabel(label)
+            lbl_name.setStyleSheet("color: #546E7A; font-weight: 500;")
+            row.addWidget(lbl_name)
+            row.addStretch()
+            val_lbl.setFont(QFont("Courier", _FS(11), QFont.Bold))
+            val_lbl.setStyleSheet("color:#1A237E;")
+            row.addWidget(val_lbl)
+            rl.addLayout(row)
+
+        add_res_row("id* [A]",    self.lbl_id_op)
+        add_res_row("iq* [A]",    self.lbl_iq_op)
+        add_res_row("Te [Nm]",    self.lbl_te_op)
+        add_res_row("λ_max [Wb]", self.lbl_lam_op)
+        add_res_row("Tmax [Nm]",  self.lbl_tmax)
+        vl.addWidget(res_box)
+
+        vl.addSpacing(_S(12))
+
+        # 2) 슬라이더 행 (하단 배치)
+        slider_row = QHBoxLayout()
+        slider_row.setSpacing(_S(12))
+
+        # RPM Slider Group
+        grp_rpm = QGroupBox("RPM")
+        gl = QVBoxLayout(grp_rpm)
+        gl.setContentsMargins(_S(8), _S(10), _S(8), _S(10))
+        self.lbl_rpm = QLabel("3000\nrpm")
+        self.lbl_rpm.setAlignment(Qt.AlignCenter)
+        self.lbl_rpm.setStyleSheet(f"font-weight:bold; font-size:{_FS(10.5)}px; color:#1A237E;")
+        self.sl_rpm = QSlider(Qt.Vertical)
+        self.sl_rpm.setRange(0, 6000)
+        self.sl_rpm.setValue(3000)
+        self.sl_rpm.setFixedWidth(_S(34))  # 명시적 너비 확보
+        self.sl_rpm.setFixedHeight(_S(180))
+        self.sl_rpm.setTickInterval(1000)
+        self.sl_rpm.setTickPosition(QSlider.TicksLeft)
+        self.sl_rpm.valueChanged.connect(self._on_change)
+        gl.addWidget(self.lbl_rpm)
+        gl.addSpacing(_S(4))
+        gl.addWidget(self.sl_rpm, 0, Qt.AlignCenter)
+        slider_row.addWidget(grp_rpm)
+
+        # Torque Slider Group
+        grp_t = QGroupBox("Torque")
+        gl2 = QVBoxLayout(grp_t)
+        gl2.setContentsMargins(_S(8), _S(10), _S(8), _S(10))
+        self.lbl_tref = QLabel("2.0\nNm")
+        self.lbl_tref.setAlignment(Qt.AlignCenter)
+        self.lbl_tref.setStyleSheet(f"font-weight:bold; font-size:{_FS(10.5)}px; color:#1A237E;")
+        self.sl_tref = QSlider(Qt.Vertical)
+        self.sl_tref.setRange(0, 500)
+        self.sl_tref.setValue(20)
+        self.sl_tref.setFixedWidth(_S(34)) # 명시적 너비 확보
+        self.sl_tref.setFixedHeight(_S(180))
+        self.sl_tref.setTickInterval(100)
+        self.sl_tref.setTickPosition(QSlider.TicksRight)
+        self.sl_tref.valueChanged.connect(self._on_change)
+        gl2.addWidget(self.lbl_tref)
+        gl2.addSpacing(_S(4))
+        gl2.addWidget(self.sl_tref, 0, Qt.AlignCenter)
+        slider_row.addWidget(grp_t)
+
+        # 슬라이더 디자인 (상/하단 색상 방향 반전 보정)
+        slider_qss = f"""
+            QSlider:vertical {{
+                width: {_S(34)}px;
+            }}
+            QSlider::groove:vertical {{
+                background: #CFD8DC;
+                width: {_S(8)}px;
+                border-radius: {_S(4)}px;
+                margin: 0 {_S(12)}px;
+            }}
+            QSlider::handle:vertical {{
+                background: #1A237E;
+                height: {_S(16)}px;
+                width: {_S(24)}px;
+                margin: 0 {_S(-8)}px;
+                border-radius: {_S(4)}px;
+            }}
+            QSlider::sub-page:vertical {{
+                background: #CFD8DC;
+                border-radius: {_S(4)}px;
+                margin: 0 {_S(12)}px;
+                width: {_S(8)}px;
+            }}
+            QSlider::add-page:vertical {{
+                background: #1A237E;
+                border-radius: {_S(4)}px;
+                margin: 0 {_S(12)}px;
+                width: {_S(8)}px;
+            }}
+        """
+        self.sl_rpm.setStyleSheet(slider_qss)
+        self.sl_tref.setStyleSheet(slider_qss)
+
+        vl.addLayout(slider_row)
         vl.addStretch()
 
         root.addWidget(ctrl)
@@ -1097,8 +1178,8 @@ class SimTab(QWidget):
         root.addWidget(self.canvas, stretch=1)
 
     def _on_change(self):
-        self.lbl_rpm.setText(f"{self.sl_rpm.value()} rpm")
-        self.lbl_tref.setText(f"{self.sl_tref.value() * 0.1:.1f} Nm")
+        self.lbl_rpm.setText(f"{self.sl_rpm.value()}\nrpm")
+        self.lbl_tref.setText(f"{self.sl_tref.value() * 0.1:.1f}\nNm")
         self.sim_changed.emit()
 
     def get_rpm(self):
@@ -1106,6 +1187,14 @@ class SimTab(QWidget):
 
     def get_tref(self):
         return self.sl_tref.value() * 0.1
+
+    def set_max_rpm(self, rpm_max):
+        """Update RPM slider range based on ParamPanel settings."""
+        self.sl_rpm.setRange(0, int(rpm_max))
+        self.sl_rpm.setTickInterval(max(500, int(rpm_max // 6)))
+        if self.sl_rpm.value() > rpm_max:
+            self.sl_rpm.setValue(int(rpm_max))
+        self._on_change()
 
     def init_bg(self, p_, Id_at_Tmax, Iq_at_Tmax):
         for a in self._bg_artists:
@@ -1201,159 +1290,223 @@ class SimTab(QWidget):
         self.canvas.draw_idle()
 
     def update_results(self, id_op, iq_op, te_op, lam_ref, Tmax_at_lam):
-        self.lbl_id_op.setText(f"{id_op:.3f} A")
-        self.lbl_iq_op.setText(f"{iq_op:.3f} A")
-        self.lbl_te_op.setText(f"{te_op:.3f} Nm")
-        self.lbl_lam_op.setText(f"{lam_ref:.5f} Wb")
-        self.lbl_tmax.setText(f"{Tmax_at_lam:.3f} Nm")
-
-
-# =========================
-# Left param panel
-# =========================
-class DescLineEdit(QLineEdit):
-    """QLineEdit that emits a description string when focused."""
-    focused = pyqtSignal(str)
-    def __init__(self, val, desc, parent=None):
-        super().__init__(val, parent)
-        self._desc = desc
-        self.setFixedHeight(_S(26))
-    def focusInEvent(self, e):
-        super().focusInEvent(e)
-        self.focused.emit(self._desc)
-
+        self.lbl_id_op.setText(f"{id_op:.2f}")
+        self.lbl_iq_op.setText(f"{iq_op:.2f}")
+        self.lbl_te_op.setText(f"{te_op:.2f}")
+        self.lbl_lam_op.setText(f"{lam_ref:.4f}")
+        self.lbl_tmax.setText(f"{Tmax_at_lam:.2f}")
 
 class ParamPanel(QWidget):
     rebuild_requested = pyqtSignal(dict, float)
     mode_changed = pyqtSignal()
     xaxis_changed = pyqtSignal(str)
+    _ALPHA_PRESETS = [
+        ("0.5 (SPWM)", 0.5),
+        ("0.577 (SVPWM)", 0.577)
+    ]
 
-    _DESCS = {
-        "vdc":   "Vdc [V] — 직류 링크(배터리) 전압",
-        "imax":  "Imax [A] — 최대 허용 상전류. id-iq 평면의 전류 제한원 반지름",
-        "psif":  "ψf [Wb] — 영구자석이 만드는 자속 (PM flux linkage)",
-        "ld":    "Ld [H] — d축 인덕턴스 (자속 방향, 약계자에 관련)",
-        "lq":    "Lq [H] — q축 인덕턴스 (토크 방향, SPM 이면 Ld=Lq)",
-        "pp":    "극쌍수 — 모터 극쌍수 (pole pairs). 전기적 속도 = 극쌍수 × 기계적 속도",
-        "alpha": "α — 인버터 출력 전압 이용률 (Vmax = α × Vdc). 공간벡터 변조 시 1/√3 ≈ 0.577",
-        "rpm_max": "최대 속도 [rpm] — 분석을 수행할 최대 속도 제한치",
-        "ct":    "동토크제어 2DLUT: 전 영역(자속\u00d7토크비)에 대한 정밀 전류 맵 생성\n"
-                 "최대토크제어 1DLUT: 각 자속별 최대토크(MTPA/MTPV) 지점만 추출",
-    }
+    def _section_label(self, text):
+        lbl = QLabel(text)
+        lbl.setStyleSheet(
+            f"font-size:{_FS(9)}px; font-weight:bold; color:#FFFFFF;"
+            f" background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1A237E, stop:1 transparent);"
+            f" letter-spacing:1px; padding:{_S(6)}px {_S(10)}px; border-radius:{_S(6)}px;"
+        )
+        return lbl
 
-    def __init__(self, p_init, Vdc_init, parent=None):
-        super().__init__(parent)
-        self.setFixedWidth(_S(270))
-        self.setObjectName("ParamPanel")
-        self.setStyleSheet("""
-            QWidget#ParamPanel {
-                background-color: white; border: 1px solid #E0E0E0; border-radius: 6px;
-            }
-        """)
-        self._build_ui(p_init, Vdc_init)
+    def _field_row(self, label_text, sub_text, widget, tip=""):
+        """레이블(우측 정렬) + 보조설명 + 위젯 레이아웃 (툴팁 포함)"""
+        row = QHBoxLayout()
+        row.setSpacing(_S(8))
+        
+        # 레이블 뭉치 (VBox)
+        lbl_vbox = QVBoxLayout()
+        lbl_vbox.setSpacing(0)
+        
+        lbl = QLabel(label_text)
+        lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lbl.setStyleSheet(f"font-size:{_FS(10.5)}px; font-weight:bold; color:#263238;")
+        
+        sub = QLabel(sub_text)
+        sub.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        sub.setStyleSheet(f"font-size:{_FS(8.5)}px; color:#607D8B;")
+        
+        lbl_vbox.addWidget(lbl)
+        lbl_vbox.addWidget(sub)
+        
+        lbl_container = QWidget()
+        lbl_container.setLayout(lbl_vbox)
+        lbl_container.setFixedWidth(_S(100))
+        
 
-    def _show_desc(self, text):
-        self.desc_lbl.setText(text)
+            
+        row.addWidget(lbl_container)
+        row.addWidget(widget, 1)
+        return row
 
-    def _build_ui(self, p_init, Vdc_init):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(15, 15, 15, 15)
-        layout.setSpacing(12)
+    def _make_sep(self):
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color:#CFD8DC; margin:0px;")
+        sep.setFixedHeight(1)
+        return sep
 
-        title = QLabel("모터 파라미터")
-        title.setFont(QFont("Segoe UI", _FS(12), QFont.Bold))
-        layout.addWidget(title)
+    def __init__(self, p_init, Vdc_init):
+        super().__init__()
+        self.setFixedWidth(_S(320))
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color: #EEEEEE;")
-        layout.addWidget(sep)
+        # Scrollable content area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet("QScrollArea { border:none; background:transparent; }")
 
-        form = QFormLayout()
-        form.setSpacing(8)
-        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        content = QWidget()
+        content.setStyleSheet("background:transparent;")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(_S(16), _S(8), _S(16), _S(16))
+        layout.setSpacing(_S(4))
 
-        def de(val, key, dec=4):
-            e = DescLineEdit(str(round(val, dec)), self._DESCS[key])
-            e.focused.connect(self._show_desc)
+        field_ss = (
+            f"QLineEdit {{ border:1px solid #CFD8DC; border-radius:{_S(6)}px;"
+            f" padding:{_S(7)}px {_S(12)}px; background:#FFFFFF;"
+            f" font-size:{_FS(10.5)}px; color:#263238; }}"
+            "QLineEdit:focus { border-color:#1A237E; background:#F8FAFF; border-width:1.5px; }"
+        )
+        combo_ss = (
+            f"QComboBox {{ border:1px solid #CFD8DC; border-radius:{_S(6)}px;"
+            f" padding:{_S(6)}px {_S(12)}px; background:#FFFFFF;"
+            f" font-size:{_FS(10.5)}px; color:#263238; }}"
+            f"QComboBox::drop-down {{ border:none; width:{_S(22)}px; }}"
+            "QComboBox:focus { border-color:#1A237E; border-width:1.5px; }"
+        )
+
+        def mk(val, dec=4):
+            e = QLineEdit(str(round(val, dec)))
+            e.setFixedHeight(_S(34))
+            e.setStyleSheet(field_ss)
             return e
 
-        self.e_vdc   = de(Vdc_init,          "vdc", 1)
-        self.e_imax  = de(p_init["Imax"],    "imax", 1)
-        self.e_psif  = de(p_init["psi_f"],   "psif", 4)
-        self.e_ld    = de(p_init["Ld"],      "ld",   4)
-        self.e_lq    = de(p_init["Lq"],      "lq",   4)
-        self.e_pp    = de(p_init["pole_pairs"],"pp",  0)
-        self.e_alpha = de(p_init["alpha"],   "alpha",3)
-        self.e_rpmmax = de(p_init.get("rpm_max", 6000.0), "rpm_max", 0)
+        def mk_combo():
+            c = QComboBox()
+            c.setFixedHeight(_S(34))
+            c.setStyleSheet(combo_ss)
+            return c
 
-        form.addRow("Vdc [V]",       self.e_vdc)
-        form.addRow("Imax [A]",      self.e_imax)
-        form.addRow("ψf [Wb]",       self.e_psif)
-        form.addRow("Ld [H]",        self.e_ld)
-        form.addRow("Lq [H]",        self.e_lq)
-        form.addRow("극쌍수",         self.e_pp)
-        form.addRow("α (Vmax/Vdc)",  self.e_alpha)
-        form.addRow("최대 속도 [rpm]", self.e_rpmmax)
-        layout.addLayout(form)
+        # ── 1. POWER & INVERTER
+        layout.addWidget(self._section_label("POWER & INVERTER"))
+        self.e_vdc  = mk(Vdc_init, 1)
+        self.e_imax = mk(p_init["Imax"], 1)
+        layout.addLayout(self._field_row("Vdc [V]", "DC Link Voltage", self.e_vdc, "DC 링크 배터리 전압"))
+        layout.addLayout(self._field_row("Imax [A]", "Max Current", self.e_imax, "인버터 최대 허용 전류 (Peak)"))
+        self.combo_alpha = mk_combo()
+        for label, _ in self._ALPHA_PRESETS: self.combo_alpha.addItem(label)
+        self.combo_alpha.setCurrentIndex(0)
+        layout.addLayout(self._field_row("Voltage Limit", "Modulation Mode", self.combo_alpha, "전압 변조 방식 및 이용률"))
 
-        self.btn = QPushButton("LUT 생성")
-        self.btn.setFixedHeight(_S(38))
-        self.btn.setStyleSheet(
-            f"QPushButton {{ background:#1565C0; color:white; border-radius:{_S(5)}px; font-weight:bold; font-size:{_FS(11)}px; }}"
-            "QPushButton:hover { background:#0D47A1; }"
-            "QPushButton:disabled { background:#90A4AE; color:#CFD8DC; }"
-        )
-        self.btn.clicked.connect(self._on_click)
-        layout.addWidget(self.btn)
+        layout.addSpacing(_S(12)) # 섹션 간 간격
 
-        # Control Mode combo
-        self.combo_mode = QComboBox()
-        self.combo_mode.addItems(["동토크제어 2DLUT", "최대토크제어 1DLUT"])
-        self.combo_mode.setFixedHeight(_S(26))
+        # ── 2. MOTOR PARAMETERS
+        layout.addWidget(self._section_label("MOTOR PARAMETERS"))
+        self.e_psif = mk(p_init["psi_f"], 4)
+        self.e_ld   = mk(p_init["Ld"], 4)
+        self.e_lq   = mk(p_init["Lq"], 4)
+        self.e_pp   = mk(p_init["pole_pairs"], 0)
+        layout.addLayout(self._field_row("ψf [Wb]", "PM Flux", self.e_psif, "영구자석 자속 결합량"))
+        layout.addLayout(self._field_row("Ld [H]", "d-axis Ind.", self.e_ld, "d축 인덕턴스"))
+        layout.addLayout(self._field_row("Lq [H]", "q-axis Ind.", self.e_lq, "q축 인덕턴스"))
+        layout.addLayout(self._field_row("Pole Pairs", "Poles", self.e_pp, "모터 극쌍수"))
+
+        layout.addSpacing(_S(12)) # 섹션 간 간격
+
+        # ── 3. OUTPUT SETTINGS
+        layout.addWidget(self._section_label("OUTPUT SETTINGS"))
+        self.e_rpmmax = mk(p_init.get("rpm_max", 6000.0), 0)
+        layout.addLayout(self._field_row("Max Speed", "RPM Limit", self.e_rpmmax, "분석 수행 최대 회전수 [rpm]"))
+        self.e_ngrid = mk(p_init.get("n_grid", 50), 0)
+        layout.addLayout(self._field_row("Grid Size (N)", "Resolution", self.e_ngrid, "생성할 LUT 배열 해상도 (N x N)"))
+
+        layout.addSpacing(_S(12)) # 섹션 간 간격
+
+        # ── 4. VISUALIZATION
+        layout.addWidget(self._section_label("VISUALIZATION"))
+        self.combo_mode = mk_combo()
+        self.combo_mode.addItems(["2D LUT (동토크)", "1D LUT (최대토크)"])
         self.combo_mode.currentIndexChanged.connect(self._on_ct_changed)
-        
-        ml = QHBoxLayout()
-        ml.addWidget(QLabel("제어 모드:"))
-        ml.addWidget(self.combo_mode)
-        layout.addLayout(ml)
-
-        # X-axis combo
-        self.combo_x = QComboBox()
+        layout.addLayout(self._field_row("Control Mode", "LUT Logic", self.combo_mode, "전류 맵 생성 방식 선택"))
+        self.combo_x = mk_combo()
         self.combo_x.addItems(["Flux Linkage [Wb]", "Speed [rpm]"])
+        self.combo_x.setCurrentIndex(1)
         self.combo_x.currentIndexChanged.connect(self._on_xaxis_changed)
-        xl = QHBoxLayout()
-        xl.addWidget(QLabel("X축:"))
-        xl.addWidget(self.combo_x)
-        layout.addLayout(xl)
+        layout.addLayout(self._field_row("X-axis", "Basis Unit", self.combo_x, "그래프 가로축 기준 단위"))
 
         layout.addStretch()
+        scroll.setWidget(content)
+        outer.addWidget(scroll, 1)
 
-        # Inline description label — pinned to bottom
-        desc_title = QLabel("설명")
-        desc_title.setStyleSheet(f"color:#888; font-size:{_FS(10)}px;")
-        layout.addWidget(desc_title)
-
-        self.desc_lbl = QLabel("")
-        self.desc_lbl.setWordWrap(True)
-        self.desc_lbl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.desc_lbl.setStyleSheet(
-            f"color:#222; font-size:{_FS(11)}px; background:#F5F5F5;"
-            f" border:1px solid #DDD; border-radius:{_S(3)}px; padding:{_S(5)}px;")
-        self.desc_lbl.setMinimumHeight(_S(70))
-        layout.addWidget(self.desc_lbl)
+        # ── Footer: GENERATE 버튼
+        footer = QWidget()
+        footer.setStyleSheet("background:transparent; border-top:none;")
+        fl = QVBoxLayout(footer)
+        fl.setContentsMargins(_S(20), 0, _S(20), _S(20))
+        
+        hl_def = QHBoxLayout()
+        hl_def.addStretch()
+        self.btn_def = QPushButton("↺ Set to default")
+        self.btn_def.setCursor(Qt.PointingHandCursor)
+        self.btn_def.setStyleSheet(
+            f"QPushButton {{ background:transparent; color:#78909C; font-size:{_FS(9)}px; font-weight:bold; border:none; text-decoration:underline; }}"
+            "QPushButton:hover { color:#1A237E; }"
+        )
+        self.btn_def.clicked.connect(self._on_default_clicked)
+        hl_def.addWidget(self.btn_def)
+        fl.addLayout(hl_def)
+        
+        self.btn = QPushButton("GENERATE LUT")
+        self.btn.setFixedHeight(_S(48))
+        self.btn.setStyleSheet(
+            f"QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1A237E, stop:1 #3949AB); color:#FFFFFF;"
+            f" border-radius:{_S(6)}px; font-weight:bold; font-size:{_FS(11.5)}px;"
+            f" border:none; letter-spacing:1.5px; }}"
+            "QPushButton:hover { background:#0D47A1; }"
+            "QPushButton:pressed { background:#002171; padding-top: 3px; padding-left: 3px; }"
+            "QPushButton:disabled { background:#B0BEC5; color:#ECEFF1; }"
+        )
+        self.btn.clicked.connect(self._on_click)
+        fl.addWidget(self.btn)
+        outer.addWidget(footer)
 
     def _on_ct_changed(self):
-        self._show_desc(self._DESCS["ct"])
         self.mode_changed.emit()
 
     def _on_xaxis_changed(self):
         self.xaxis_changed.emit(self.combo_x.currentText())
 
+    def _on_default_clicked(self):
+        self.e_vdc.setText("48.0")
+        self.e_imax.setText("20.0")
+        self.combo_alpha.setCurrentIndex(0)
+        self.e_psif.setText("0.01")
+        self.e_ld.setText("0.004")
+        self.e_lq.setText("0.008")
+        self.e_pp.setText("4")
+        self.e_rpmmax.setText("4000")
+        self.e_ngrid.setText("20")
+        self.combo_mode.setCurrentIndex(0)
+        self.combo_x.setCurrentIndex(1)
+
     def get_xaxis_mode(self):
         return self.combo_x.currentText()
 
     def is_const_torque(self):
-        return "2DLUT" in self.combo_mode.currentText()
+        return self.combo_mode.currentIndex() == 0
+
+    def get_alpha(self):
+        return self._ALPHA_PRESETS[self.combo_alpha.currentIndex()][1]
 
     def _on_click(self):
         try:
@@ -1363,13 +1516,14 @@ class ParamPanel(QWidget):
                 "Lq":         float(self.e_lq.text()),
                 "psi_f":      float(self.e_psif.text()),
                 "Imax":       float(self.e_imax.text()),
-                "alpha":      float(self.e_alpha.text()),
+                "alpha":      self.get_alpha(),
                 "rpm_max":    float(self.e_rpmmax.text()),
+                "n_grid":     int(self.e_ngrid.text()),
             }
             Vdc = float(self.e_vdc.text())
             p["Vdc"] = Vdc
         except ValueError:
-            self._show_desc("⚠ 잘못된 입력값이 있습니다. 파라미터를 확인해주세요.")
+            QMessageBox.warning(self, "입력 오류", "잘못된 입력값이 있습니다.")
             return
         self.btn.setEnabled(False)
         self.rebuild_requested.emit(p, Vdc)
@@ -1388,7 +1542,7 @@ class MainWindow(QMainWindow):
         self.resize(_S(1200), _S(740))
 
         self.p_  = {"pole_pairs": 4, "Ld": 0.004, "Lq": 0.008,
-                    "psi_f": 0.01, "Imax": 20.0, "alpha": 1/3, "rpm_max": 6000.0}
+                    "psi_f": 0.01, "Imax": 20.0, "alpha": 0.5, "rpm_max": 4000.0, "n_grid": 20}
         self.Vdc = 48.0
         self.lut_data = None
         self._worker  = None
@@ -1397,28 +1551,51 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         self.setStyleSheet(f"""
-            QMainWindow {{ background-color: #F0F2F5; font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; }}
-            QLabel {{ font-size: {_FS(11)}px; color: #2C3E50; }}
+            * {{ font-family: "Segoe UI", "NanumSquare"; }}
+            QMainWindow {{ background-color: #ECEFF1; }}
+            QLabel {{ font-size: {_FS(10.5)}px; color: #263238; }}
             QComboBox, QLineEdit {{
-                border: 1px solid #CFD8DC; border-radius: {_S(4)}px; padding: {_S(4)}px {_S(6)}px;
-                background-color: #FAFAFA; font-size: {_FS(11)}px;
+                border: 1px solid #CFD8DC; border-radius: {_S(6)}px; padding: {_S(6)}px {_S(10)}px;
+                background-color: #FFFFFF; font-size: {_FS(10.5)}px; color: #263238;
             }}
-            QComboBox:hover, QLineEdit:hover {{ border-color: #90CAF9; background-color: white; }}
-            QComboBox:focus, QLineEdit:focus {{ border-color: #1565C0; background-color: white; }}
-            QComboBox::drop-down {{ border: none; width: {_S(20)}px; }}
-            
+            QComboBox:hover, QLineEdit:hover {{ border-color: #B0BEC5; }}
+            QComboBox:focus, QLineEdit:focus {{ border-color: #1A237E; background-color: #FFFFFF; }}
+            QComboBox::drop-down {{ border: none; width: {_S(22)}px; }}
+
             QTabWidget::pane {{
-                border: 1px solid #E0E0E0; background: white; border-radius: {_S(6)}px;
+                border: 1px solid #CFD8DC; background: white;
+                border-radius: {_S(12)}px;
+                margin-top: -1px;
             }}
+            QTabWidget::tab-bar {{ left: {_S(10)}px; }}
             QTabBar::tab {{
-                background: transparent; border: none; border-bottom: 3px solid transparent;
-                padding: {_S(8)}px {_S(20)}px; font-size: {_FS(12)}px; color: #78909C; font-weight: bold;
-                margin-right: {_S(2)}px;
+                background: #CFD8DC;
+                border: 1px solid #B0BEC5;
+                border-bottom: none;
+                border-top-left-radius: {_S(8)}px;
+                border-top-right-radius: {_S(8)}px;
+                padding: {_S(5)}px {_S(18)}px;
+                min-width: {_S(90)}px;
+                font-size: {_FS(9)}px;
+                color: #546E7A;
+                font-weight: bold;
+                letter-spacing: 0.5px;
+                margin-right: {_S(4)}px;
+                margin-top: {_S(4)}px;
             }}
             QTabBar::tab:selected {{
-                color: #1565C0; border-bottom: 3px solid #1565C0;
+                background: white;
+                color: #1A237E;
+                font-weight: bold;
+                border: 1px solid #CFD8DC;
+                border-bottom: 2px solid white;
+                margin-top: 0px;
+                padding-bottom: {_S(8)}px;
             }}
-            QTabBar::tab:hover:!selected {{ color: #42A5F5; border-bottom: 3px solid #BBDEFB; }}
+            QTabBar::tab:hover:!selected {{ 
+                background: #B0BEC5; 
+                color: #263238; 
+            }}
         """)
 
         central = QWidget()
@@ -1439,15 +1616,31 @@ class MainWindow(QMainWindow):
         self.tabs.setTabPosition(QTabWidget.North)
         self.tabs.setEnabled(False)   # disabled until LUT built
 
+        btn_help = QPushButton("❓ 설명")
+        btn_help.setCursor(Qt.PointingHandCursor)
+        btn_help.setFixedHeight(_S(26))
+        btn_help.setStyleSheet(
+            f"QPushButton {{ background:#1A237E; color:white; border-radius:{_S(13)}px;"
+            f" font-size:{_FS(10)}px; padding: 0 {_S(16)}px; margin-right: {_S(10)}px; margin-bottom: {_S(6)}px; border:none; font-weight:bold; }}"
+            "QPushButton:hover { background:#3949AB; }"
+        )
+        btn_help.clicked.connect(self._show_help)
+        self.tabs.setCornerWidget(btn_help, Qt.TopRightCorner)
+        self.btn_help = btn_help
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        
+        # Initial call
+        self._on_tab_changed(0)
+
 
         self.tmax_tab = TmaxTab()
         self.lut_tab  = LutTab()
         self.lut_tab.lut_imported.connect(self._on_lut_imported)
         self.sim_tab  = SimTab()
 
-        self.tabs.addTab(self.tmax_tab, "최대토크")
+        self.tabs.addTab(self.tmax_tab, "GRAPH")
         self.tabs.addTab(self.lut_tab,  "LUT")
-        self.tabs.addTab(self.sim_tab,  "시뮬레이션")
+        self.tabs.addTab(self.sim_tab,  "SIMULATION")
         self.sim_tab.sim_changed.connect(self._refresh_sim)
         root.addWidget(self.tabs, stretch=1)
 
@@ -1502,6 +1695,7 @@ class MainWindow(QMainWindow):
         self.lut_tab.update_plot(data["lam_grid"], data["Tratio_grid"],
                                  data["Id_LUT_2D"], data["Iq_LUT_2D"], p_=self.p_, Vdc=self.Vdc)
         self.sim_tab.init_bg(self.p_, data["Id_at_Tmax"], data["Iq_at_Tmax"])
+        self.sim_tab.set_max_rpm(self.p_["rpm_max"])
         self._refresh_sim()
 
     def _on_lut_imported(self, data):
@@ -1543,6 +1737,7 @@ class MainWindow(QMainWindow):
         self.tmax_tab.update_plot(lam_grid, Tmax_LUT, p_=self.p_, Vdc=self.Vdc)
         self.lut_tab.update_plot(lam_grid, Tratio_grid, Id_2D, Iq_2D, p_=self.p_, Vdc=self.Vdc)
         self.sim_tab.init_bg(self.p_, Id_at_Tmax, Iq_at_Tmax)
+        self.sim_tab.set_max_rpm(self.p_["rpm_max"])
         self._refresh_sim()
 
     def _on_mode_changed(self):
@@ -1590,6 +1785,30 @@ class MainWindow(QMainWindow):
         self.sim_tab.redraw(self.p_, lam_ref, Tref_cmd, Tref,
                             id_op, iq_op, Tmax_at_lam)
 
+    def _on_tab_changed(self, index):
+        """Update help button color based on tab theme."""
+        themes = [
+            ("#1A237E", "#3949AB"), # Blue
+            ("#2E7D32", "#43A047"), # Green
+            ("#455A64", "#607D8B"), # Slate
+        ]
+        color, hover = themes[index] if index < len(themes) else themes[0]
+        self.btn_help.setStyleSheet(
+            f"QPushButton {{ background:{color}; color:white; border-radius:{_S(13)}px;"
+            f" font-size:{_FS(10)}px; padding: 0 {_S(16)}px; margin-right: {_S(10)}px; margin-bottom: {_S(6)}px; border:none; font-weight:bold; }}"
+            f"QPushButton:hover {{ background:{hover}; }}"
+        )
+
+    def _show_help(self):
+        idx = self.tabs.currentIndex()
+        if idx == 0:
+            dlg = FormulaHelpDialog(self)
+        elif idx == 1:
+            dlg = LutHelpDialog(self)
+        else:
+            dlg = SimHelpDialog(self)
+        dlg.exec_()
+
 
 # =========================
 # Entry point
@@ -1601,10 +1820,15 @@ def main():
     # Compute DPI scale factor relative to 96 dpi baseline
     screen = app.primaryScreen()
     logical_dpi = screen.logicalDotsPerInch()
-    _DPI_SCALE = max(0.75, min(logical_dpi / 96.0, 3.0))
+    _DPI_SCALE = max(0.75, min(logical_dpi / 96.0, 3.0)) * 1.15  # 전체 크기 15% 확대
 
     app.setStyle("Fusion")
-    app.setFont(QFont("Arial", _FS(9)))
+    
+    # 영문 Segoe UI, 한글 NanumSquare 조합을 위해 폰트 설정 최적화
+    # QFontInfo를 통한 체크보다 스타일시트 우선순위 활용
+    app.setFont(QFont("Segoe UI", _FS(10)))
+    QFont.insertSubstitution("Segoe UI", "NanumSquare")
+
     win = MainWindow()
     win.show()
     sys.exit(app.exec_())
