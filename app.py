@@ -23,8 +23,9 @@ from PyQt5.QtWidgets import (
     QButtonGroup, QStackedWidget
 )
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QCursor, QFontInfo
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont, QCursor, QFontInfo, QFontDatabase, QPainter, QColor, QPen
+import re
 
 import os
 # ----- High-DPI support -----
@@ -46,6 +47,168 @@ def _S(px: int) -> int:
 def _FS(pt: int) -> int:
     """Scale font point size for the current DPI."""
     return max(6, round(pt * _DPI_SCALE))
+
+
+def _ui_font(pt: int) -> int:
+    """Centralized UI font scale target."""
+    return _FS(pt)
+
+
+# -------------------------
+# Korean font helpers
+# -------------------------
+_korean_changes = 0
+_scan_widgets = 0
+_korean_widgets = 0
+_korean_samples = []
+_NANUM_FAMILY = None
+_NANUM_BOLD_FAMILY = None
+
+def is_korean(text: str) -> bool:
+    if not text:
+        return False
+    return bool(re.search(r"[\uac00-\ud7a3]", text))
+
+
+def is_pure_korean_text(text: str) -> bool:
+    if not text:
+        return False
+    stripped = re.sub(r"[\s\d\W_]+", "", text)
+    if not stripped:
+        return False
+    return bool(re.fullmatch(r"[\uac00-\ud7a3]+", stripped))
+
+
+def apply_korean_font(widget, family: str):
+    """Apply a Korean-capable font to the widget without changing its text."""
+    try:
+        f = widget.font()
+        f.setFamily(family)
+        widget.setFont(f)
+    except Exception:
+        pass
+
+
+def apply_fonts_recursively(widget, nanum_family: str):
+    """Recursively apply selective Korean font wrapping to supported widgets.
+
+    Strategy:
+    - For widgets containing Korean text, set their font family to Nanum without changing the displayed text.
+    - This avoids HTML span tags leaking into the UI.
+    """
+    from PyQt5.QtWidgets import QLabel, QPushButton, QCheckBox, QRadioButton, QGroupBox, QLineEdit, QTabWidget
+    from PyQt5.QtWidgets import QAction
+    # initialize debug counters
+    try:
+        globals()['_scan_widgets']
+    except KeyError:
+        globals()['_scan_widgets'] = 0
+    try:
+        globals()['_korean_widgets']
+    except KeyError:
+        globals()['_korean_widgets'] = 0
+    try:
+        globals()['_korean_samples']
+    except KeyError:
+        globals()['_korean_samples'] = []
+
+    # handle common text properties
+    try:
+        # QLabel
+        if isinstance(widget, QLabel):
+            txt = widget.text()
+            globals()['_scan_widgets'] += 1
+            if is_pure_korean_text(txt):
+                globals()['_korean_widgets'] += 1
+                if len(globals()['_korean_samples']) < 10:
+                    globals()['_korean_samples'].append((widget.__class__.__name__, txt))
+                apply_korean_font(widget, nanum_family)
+        # QPushButton, QCheckBox, QRadioButton, QGroupBox
+        elif isinstance(widget, (QPushButton, QCheckBox, QRadioButton, QGroupBox)):
+            if hasattr(widget, 'text'):
+                txt = widget.text()
+                globals()['_scan_widgets'] += 1
+                if is_pure_korean_text(txt):
+                    globals()['_korean_widgets'] += 1
+                    if len(globals()['_korean_samples']) < 10:
+                        globals()['_korean_samples'].append((widget.__class__.__name__, txt))
+                    apply_korean_font(widget, nanum_family)
+        # QLineEdit placeholder
+        elif isinstance(widget, QLineEdit):
+            ph = widget.placeholderText()
+            globals()['_scan_widgets'] += 1
+            if is_pure_korean_text(ph):
+                globals()['_korean_widgets'] += 1
+                if len(globals()['_korean_samples']) < 10:
+                    globals()['_korean_samples'].append((widget.__class__.__name__, ph))
+                apply_korean_font(widget, nanum_family)
+        # QTabWidget tabs
+        elif isinstance(widget, QTabWidget):
+            for i in range(widget.count()):
+                t = widget.tabText(i)
+                globals()['_scan_widgets'] += 1
+                if is_pure_korean_text(t):
+                    globals()['_korean_widgets'] += 1
+                    if len(globals()['_korean_samples']) < 10:
+                        globals()['_korean_samples'].append(("Tab", t))
+                    apply_korean_font(widget.tabBar(), nanum_family)
+        # QAction (menus, toolbar)
+        if hasattr(widget, 'actions'):
+            for act in widget.actions():
+                if act is None:
+                    continue
+                atext = act.text()
+                globals()['_scan_widgets'] += 1
+                if is_pure_korean_text(atext):
+                    globals()['_korean_widgets'] += 1
+                    if len(globals()['_korean_samples']) < 10:
+                        globals()['_korean_samples'].append(("QAction", atext))
+                    try:
+                        f = act.font()
+                        f.setFamily(nanum_family)
+                        act.setFont(f)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # Tooltips and other properties
+    try:
+        tt = widget.toolTip()
+        if is_korean(tt):
+            apply_korean_font(widget, nanum_family)
+    except Exception:
+        pass
+
+    # Recurse
+    # Special-case: QTableWidget contents (QTableWidgetItem are not QWidget)
+    try:
+        from PyQt5.QtWidgets import QTableWidget
+        if isinstance(widget, QTableWidget):
+            rows = widget.rowCount()
+            cols = widget.columnCount()
+            for r in range(rows):
+                for c in range(cols):
+                    item = widget.item(r, c)
+                    if item is None:
+                        continue
+                    txt = item.text()
+                    globals()['_scan_widgets'] += 1
+                    if is_korean(txt):
+                        globals()['_korean_widgets'] += 1
+                        if len(globals()['_korean_samples']) < 10:
+                            globals()['_korean_samples'].append(("QTableWidgetItem", txt))
+                        try:
+                            f = item.font()
+                            f.setFamily(nanum_family)
+                            item.setFont(f)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
+    for child in widget.findChildren(QWidget):
+        apply_fonts_recursively(child, nanum_family)
 
 
 # =========================
@@ -324,14 +487,15 @@ class TabOverlay(QWidget):
         card.setFixedWidth(_S(380))
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(_S(32), _S(32), _S(32), _S(32))
-        card_layout.setSpacing(_S(18))
+        card_layout.setSpacing(_S(12))
 
         # Main message
         self.label = QLabel()
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setWordWrap(True)
+        self.label.setFont(QFont("NanumSquare", _ui_font(14), QFont.Bold))
         self.label.setStyleSheet(
-            f"font-size: {_FS(13)}px; font-weight: bold; color: #1A237E; line-height: 1.5;"
+            f"font-size: {_FS(14)}px; font-weight: bold; color: #1A237E; line-height: 1.5;"
         )
         card_layout.addWidget(self.label)
 
@@ -340,7 +504,7 @@ class TabOverlay(QWidget):
         self.sub_lbl.setAlignment(Qt.AlignCenter)
         self.sub_lbl.setWordWrap(True)
         self.sub_lbl.setStyleSheet(
-            f"font-size: {_FS(10)}px; color: #607D8B; font-weight: normal;"
+            f"font-size: {_FS(11)}px; color: #607D8B; font-weight: normal; margin-top: 0px;"
         )
         card_layout.addWidget(self.sub_lbl)
 
@@ -348,7 +512,7 @@ class TabOverlay(QWidget):
         self.prog_container = QWidget()
         pc = QVBoxLayout(self.prog_container)
         pc.setContentsMargins(0, 0, 0, 0)
-        pc.setSpacing(_S(6))
+        pc.setSpacing(_S(4))
 
         # Progress bar
         self.progress = QProgressBar()
@@ -373,6 +537,7 @@ class TabOverlay(QWidget):
         # Percentage label
         self.pct_lbl = QLabel("0%")
         self.pct_lbl.setAlignment(Qt.AlignCenter)
+        self.pct_lbl.setFont(QFont("NanumSquare", _ui_font(11), QFont.Bold))
         self.pct_lbl.setStyleSheet(
             f"font-size: {_FS(11)}px; font-weight: bold; color: #1A237E;"
         )
@@ -385,15 +550,15 @@ class TabOverlay(QWidget):
         outer.addStretch(3)
 
     def show_idle(self):
-        self.label.setText("좌측 패널에 모터 파라미터를 입력하고\n[GENERATE LUT] 버튼을 눌러주세요.")
-        self.sub_lbl.setText("입력된 조건에 따라 전동기 특성 맵(LUT)이 생성됩니다.")
+        self.label.setText("GENERATE LUT를 눌러주세요.")
+        self.sub_lbl.setText("입력된 조건에 따라 전동기 특성 맵이 생성됩니다.")
         self.prog_container.setVisible(False)
         self.show()
         self.raise_()
 
     def show_calculating(self):
         self.label.setText("최적화 연산 수행 중...")
-        self.sub_lbl.setText("입력된 파라미터를 기반으로 고정밀 LUT 데이터를 계산하고 있습니다.")
+        self.sub_lbl.setText("입력된 파라미터를 기반으로 계산하고 있습니다.")
         self.progress.setValue(0)
         self.pct_lbl.setText("0%")
         self.prog_container.setVisible(True)
@@ -417,6 +582,100 @@ class MplCanvas(FigureCanvas):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
 
+class CircularSlider(QSlider):
+    def __init__(self, orientation, parent=None):
+        super().__init__(orientation, parent)
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setMouseTracking(True)
+        self.setTracking(True)
+
+    def _value_from_pos(self, pos_y):
+        minimum = self.minimum()
+        maximum = self.maximum()
+        if maximum <= minimum:
+            return minimum
+
+        top_margin = _S(18)
+        bottom_margin = _S(18)
+        groove_top = top_margin
+        groove_bottom = max(groove_top + 1, self.height() - bottom_margin)
+        clamped_y = max(groove_top, min(int(pos_y), groove_bottom))
+        ratio = (groove_bottom - clamped_y) / float(groove_bottom - groove_top)
+        if self.invertedAppearance():
+            ratio = 1.0 - ratio
+        return int(round(minimum + ratio * (maximum - minimum)))
+
+    def _handle_center_y(self):
+        minimum = self.minimum()
+        maximum = self.maximum()
+        if maximum == minimum:
+            ratio = 0.0
+        else:
+            ratio = (self.value() - minimum) / float(maximum - minimum)
+
+        top_margin = _S(18)
+        bottom_margin = _S(18)
+        groove_top = top_margin
+        groove_bottom = max(groove_top + 1, self.height() - bottom_margin)
+        if self.invertedAppearance():
+            return groove_top + ratio * (groove_bottom - groove_top)
+        return groove_bottom - ratio * (groove_bottom - groove_top)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        groove_width = _S(8)
+        groove_radius = groove_width // 2
+        top_margin = _S(18)
+        bottom_margin = _S(18)
+        handle_radius = _S(14)
+        center_x = self.rect().center().x()
+        groove_top = top_margin
+        groove_bottom = max(groove_top + 1, self.height() - bottom_margin)
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#9E9E9E"))
+        painter.drawRoundedRect(
+            center_x - groove_width // 2,
+            groove_top,
+            groove_width,
+            groove_bottom - groove_top,
+            groove_radius,
+            groove_radius,
+        )
+
+        handle_center_y = self._handle_center_y()
+
+        painter.setBrush(QColor("#1A237E"))
+        painter.setPen(QPen(QColor("#1A237E"), 1))
+        painter.drawEllipse(center_x - handle_radius, int(handle_center_y) - handle_radius, handle_radius * 2, handle_radius * 2)
+        painter.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.setSliderDown(True)
+            self.setValue(self._value_from_pos(event.pos().y()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            self.setValue(self._value_from_pos(event.pos().y()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.setSliderDown(False)
+            self.setValue(self._value_from_pos(event.pos().y()))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 # =========================
 # Right-side tab contents
 # =========================
@@ -431,12 +690,12 @@ class BaseHelpDialog(QDialog):
         
         self.setStyleSheet(f"""
             QDialog {{ background: #FFFFFF; }}
-            QLabel#title {{ font-size: {_FS(13)}px; font-weight: bold; color: white; }}
-            QLabel#section {{ font-size: {_FS(10.5)}px; font-weight: bold; color: {color};
+            QLabel#title {{ font-size: {_FS(14)}px; font-weight: bold; color: white; }}
+            QLabel#section {{ font-size: {_FS(11)}px; font-weight: bold; color: {color};
                              border-bottom: 2px solid {color}; padding-bottom: 2px;
                              margin-top: 15px; margin-bottom: 5px; }}
-            QLabel#body {{ font-size: {_FS(10.5)}px; color: #37474F; line-height: 1.5; }}
-            QLabel#formula {{ font-family: 'Consolas', 'Courier New'; font-size: {_FS(12)}px;
+            QLabel#body {{ font-size: {_FS(11)}px; color: #37474F; line-height: 1.5; }}
+            QLabel#formula {{ font-family: "Inter", "Pretendard", "Noto Sans KR", system-ui, sans-serif; font-size: {_FS(12)}px;
                              background: #F8F9FA; border-left: 4px solid {color};
                              padding: 10px; color: #263238; }}
         """)
@@ -466,10 +725,25 @@ class BaseHelpDialog(QDialog):
         self.outer.addWidget(scroll)
         
         # Close Button
-        btn_box = QDialogButtonBox(QDialogButtonBox.Close)
-        btn_box.setContentsMargins(15, 0, 15, 0)
-        btn_box.rejected.connect(self.accept)
-        self.outer.addWidget(btn_box)
+        close_btn = QPushButton("닫기")
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.setFixedHeight(_S(32))
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #F0F2F5; color: #37474F; border: none;
+                border-radius: {_S(6)}px; font-weight: bold; font-size: {_FS(11)}px;
+                padding: 0 {_S(20)}px;
+            }}
+            QPushButton:hover {{ background: #E2E6EA; }}
+        """)
+        close_btn.clicked.connect(self.accept)
+        
+        btn_layout = QHBoxLayout()
+        btn_layout.setContentsMargins(15, 0, 15, 0)
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        
+        self.outer.addLayout(btn_layout)
 
     def add_section(self, title):
         l = QLabel(title); l.setObjectName("section"); self.vl.addWidget(l); return l
@@ -481,35 +755,279 @@ class BaseHelpDialog(QDialog):
 class FormulaHelpDialog(BaseHelpDialog):
     def __init__(self, parent=None):
         super().__init__("수식 설명 — 최대토크 & 출력", "#1A237E", parent)
-        self.add_section("1. 전압 제한과 최대 자속 (&lambda;<sub>max</sub>)")
-        self.add_body("인버터 최대 출력 전압과 회전 속도에 의해 최대 허용 자속이 결정됩니다.")
+
+        self.add_section("1. 전압 제한과 최대 허용 자속")
+        self.add_body(
+            "회전 속도가 증가하면 역기전력이 커지므로, 인버터 전압 한계 안에서 "
+            "허용 가능한 최대 자속 λmax를 먼저 계산합니다. "
+            "이 값은 해당 속도에서 전류 벡터가 넘지 말아야 할 자속 제한입니다."
+        )
         self.add_formula(
             "<i>V</i><sub>max</sub> = &alpha; &times; <i>V</i><sub>dc</sub><br>"
-            "&lambda;<sub>max</sub> = <i>V</i><sub>max</sub> / &omega;<sub>e</sub>  [Wb]"
+            "&omega;<sub>mech</sub> = rpm &times; 2&pi; / 60<br>"
+            "&omega;<sub>e</sub> = pole_pairs &times; &omega;<sub>mech</sub><br>"
+            "&lambda;<sub>max</sub> = <i>V</i><sub>max</sub> / &omega;<sub>e</sub>"
         )
-        self.add_section("2. 최대토크 (Max Torque)")
-        self.add_body("전류 제한과 자속 제한 내에서 토크를 극대화하는 (id, iq)를 수치 최적화로 구합니다.")
-        self.add_formula(
-            "<i>T<sub>e</sub></i> = 1.5 &times; <i>P</i> &times; [ &psi;<sub>f</sub> &times; <i>i<sub>q</sub></i> + (<i>L<sub>d</sub></i> &minus; <i>L<sub>q</sub></i>) &times; <i>i<sub>d</sub></i> &times; <i>i<sub>q</sub></i> ]"
-        )
-        self.vl.addStretch()
 
+        self.add_section("2. d-q축 자속 계산")
+        self.add_body(
+            "각 전류 조합 id, iq에 대해 d축 자속과 q축 자속을 계산하고, "
+            "두 성분의 벡터 크기를 전체 자속 크기로 사용합니다."
+        )
+        self.add_formula(
+            "&lambda;<sub>d</sub> = &psi;<sub>f</sub> + L<sub>d</sub> i<sub>d</sub><br>"
+            "&lambda;<sub>q</sub> = L<sub>q</sub> i<sub>q</sub><br>"
+            "|&lambda;| = &radic;(&lambda;<sub>d</sub><sup>2</sup> + "
+            "&lambda;<sub>q</sub><sup>2</sup>)"
+        )
+
+        self.add_section("3. 전자기 토크 계산")
+        self.add_body(
+            "토크는 영구자석 토크 성분과 릴럭턴스 토크 성분을 함께 고려해 계산합니다. "
+            "따라서 iq만 증가시키는 방식이 아니라, id와 iq의 조합에 따라 토크가 달라집니다."
+        )
+        self.add_formula(
+            "T<sub>e</sub> = 1.5 &times; pole_pairs &times; "
+            "[ &psi;<sub>f</sub> i<sub>q</sub> + "
+            "(L<sub>d</sub> - L<sub>q</sub>) i<sub>d</sub> i<sub>q</sub> ]"
+        )
+
+        self.add_section("4. 최대토크 최적화")
+        self.add_body(
+            "각 λmax에서 전류 제한과 자속 제한을 동시에 만족하는 id, iq 중 "
+            "토크 Te가 가장 큰 지점을 수치 최적화로 찾습니다. "
+            "코드에서는 -Te를 최소화하여 Te 최대화 문제를 풉니다."
+        )
+        self.add_formula(
+            "Maximize: T<sub>e</sub>(i<sub>d</sub>, i<sub>q</sub>)<br>"
+            "Subject to:<br>"
+            "i<sub>d</sub><sup>2</sup> + i<sub>q</sub><sup>2</sup> &le; I<sub>max</sub><sup>2</sup><br>"
+            "|&lambda;(i<sub>d</sub>, i<sub>q</sub>)| &le; &lambda;<sub>max</sub><br>"
+            "-I<sub>max</sub> &le; i<sub>d</sub> &le; 0, "
+            "0 &le; i<sub>q</sub> &le; I<sub>max</sub>"
+        )
+
+        self.add_section("5. 여러 초기값을 사용하는 이유")
+        self.add_body(
+            "비선형 최적화는 시작점에 따라 다른 해에 수렴할 수 있습니다. "
+            "따라서 여러 초기 전류 조합에서 최적화를 반복 수행한 뒤, "
+            "제약 조건을 만족하면서 가장 큰 토크를 내는 해를 선택합니다."
+        )
+
+        self.add_section("6. 최대 출력 계산")
+        self.add_body(
+            "최대 출력은 각 속도에서 얻은 최대토크와 기계각속도의 곱으로 계산합니다. "
+            "그래프에서는 W 값을 kW로 변환해 표시합니다."
+        )
+        self.add_formula(
+            "P<sub>max</sub> = T<sub>max</sub> &times; &omega;<sub>mech</sub><br>"
+            "P<sub>max,kW</sub> = P<sub>max</sub> / 1000"
+        )
+
+        self.vl.addStretch()
 class LutHelpDialog(BaseHelpDialog):
     def __init__(self, parent=None):
         super().__init__("도움말 — LUT 생성 및 제어", "#2E7D32", parent)
-        self.add_section("1. 전 영역 LUT 생성")
-        self.add_body("지령 토크 비율(T_ratio)에 대해 동손을 최소화하는 운전점을 검색합니다.")
-        self.add_formula(
-            "Minimize &radic;(<i>i<sub>d</sub></i><sup>2</sup> + <i>i<sub>q</sub></i><sup>2</sup>)<br>"
-            "Subject to: <i>T<sub>e</sub></i>(<i>i<sub>d</sub></i>, <i>i<sub>q</sub></i>) = <i>T<sub>ref</sub></i>"
+
+        self.add_section("1. LUT의 목적")
+        self.add_body(
+            "LUT는 주어진 자속 제한 λmax와 토크 비율 T_ratio에 대해 "
+            "최적의 d축 전류 id와 q축 전류 iq를 미리 계산해 저장한 표입니다. "
+            "실시간 제어에서는 매번 최적화를 수행하지 않고, 이 LUT를 보간하여 "
+            "전류 지령을 빠르게 얻습니다."
         )
+
+        self.add_section("2. λmax 그리드 생성")
+        self.add_body(
+            "먼저 운전 가능한 자속 범위를 여러 개의 λmax 지점으로 나눕니다. "
+            "최소 자속은 최고속도 rpm_max에서 필요한 전압 제한을 기준으로 정하고, "
+            "최대 자속은 전류 한계 Imax에서 가능한 자속 크기를 기준으로 정합니다."
+        )
+        self.add_formula(
+            "V<sub>max</sub> = &alpha; &times; V<sub>dc</sub><br>"
+            "&lambda;<sub>min</sub> &approx; "
+            "V<sub>max</sub> / (&omega;<sub>max</sub> &times; pole_pairs)<br>"
+            "&lambda;<sub>grid</sub> = linspace(&lambda;<sub>lower</sub>, "
+            "&lambda;<sub>upper</sub>, N)"
+        )
+
+        self.add_section("3. 각 λmax에서 최대토크 계산")
+        self.add_body(
+            "각 λmax 지점마다 전류 제한과 자속 제한을 동시에 만족하는 범위에서 "
+            "가장 큰 토크를 낼 수 있는 id, iq를 먼저 찾습니다. "
+            "이 결과가 Tmax_LUT, Id_at_Tmax, Iq_at_Tmax로 저장됩니다."
+        )
+        self.add_formula(
+            "T<sub>max</sub>(&lambda;<sub>max</sub>) = "
+            "max T<sub>e</sub>(i<sub>d</sub>, i<sub>q</sub>)<br>"
+            "Subject to:<br>"
+            "i<sub>d</sub><sup>2</sup> + i<sub>q</sub><sup>2</sup> "
+            "&le; I<sub>max</sub><sup>2</sup><br>"
+            "|&lambda;(i<sub>d</sub>, i<sub>q</sub>)| "
+            "&le; &lambda;<sub>max</sub>"
+        )
+
+        self.add_section("4. 토크 비율 T_ratio 적용")
+        self.add_body(
+            "각 λmax에서 최대토크를 구한 뒤, 0부터 거의 1까지의 토크 비율 "
+            "T_ratio를 곱해 목표토크 Tref를 만듭니다. "
+            "즉 LUT의 각 열은 최대토크 대비 몇 퍼센트 토크를 낼 것인지를 의미합니다."
+        )
+        self.add_formula(
+            "T<sub>ratio</sub> = 0.0 ~ 0.999<br>"
+            "T<sub>ref</sub> = T<sub>ratio</sub> &times; "
+            "T<sub>max</sub>(&lambda;<sub>max</sub>)"
+        )
+
+        self.add_section("5. 최소전류 운전점 탐색")
+        self.add_body(
+            "각 λmax와 T_ratio 조합에 대해, 목표토크 Tref를 정확히 만족하면서 "
+            "전류 크기가 가장 작은 id, iq를 찾습니다. "
+            "전류 크기를 최소화하면 동손 I²R을 줄이는 운전점이 됩니다."
+        )
+        self.add_formula(
+            "Minimize: i<sub>d</sub><sup>2</sup> + i<sub>q</sub><sup>2</sup><br>"
+            "Subject to:<br>"
+            "T<sub>e</sub>(i<sub>d</sub>, i<sub>q</sub>) = T<sub>ref</sub><br>"
+            "|&lambda;(i<sub>d</sub>, i<sub>q</sub>)| "
+            "&le; &lambda;<sub>max</sub><br>"
+            "i<sub>d</sub><sup>2</sup> + i<sub>q</sub><sup>2</sup> "
+            "&le; I<sub>max</sub><sup>2</sup>"
+        )
+
+        self.add_section("6. T_ratio = 0일 때의 처리")
+        self.add_body(
+            "토크 지령이 0이면 iq는 0으로 두고, 자속 제한을 만족하는 id를 계산합니다. "
+            "자속 제한이 충분히 크면 id = 0, iq = 0을 사용합니다. "
+            "반대로 λmax가 영구자석 자속보다 작으면 음의 id를 넣어 자속을 낮춥니다."
+        )
+        self.add_formula(
+            "If &lambda;<sub>max</sub> &ge; &psi;<sub>f</sub>: "
+            "i<sub>d</sub> = 0, i<sub>q</sub> = 0<br>"
+            "If &lambda;<sub>max</sub> &lt; &psi;<sub>f</sub>: "
+            "i<sub>d</sub> = "
+            "(&lambda;<sub>max</sub> - &psi;<sub>f</sub>) / L<sub>d</sub>, "
+            "i<sub>q</sub> = 0"
+        )
+
+        self.add_section("7. 2D LUT 저장")
+        self.add_body(
+            "계산된 최적 전류는 λmax 방향과 T_ratio 방향의 2차원 배열로 저장됩니다. "
+            "Id_LUT_2D에는 d축 전류, Iq_LUT_2D에는 q축 전류가 저장됩니다."
+        )
+        self.add_formula(
+            "Id_LUT_2D[&lambda;<sub>index</sub>, T<sub>ratio,index</sub>] "
+            "= i<sub>d</sub><sup>*</sup><br>"
+            "Iq_LUT_2D[&lambda;<sub>index</sub>, T<sub>ratio,index</sub>] "
+            "= i<sub>q</sub><sup>*</sup>"
+        )
+
+        self.add_section("8. 보간을 통한 실시간 사용")
+        self.add_body(
+            "실제 시뮬레이션이나 제어에서는 λmax와 T_ratio가 LUT 격자점과 "
+            "정확히 일치하지 않을 수 있습니다. "
+            "그래서 RegularGridInterpolator를 사용해 주변 격자값을 선형 보간하고, "
+            "현재 운전점에 맞는 id*, iq*를 계산합니다."
+        )
+        self.add_formula(
+            "i<sub>d</sub><sup>*</sup> = interp_id("
+            "&lambda;<sub>max</sub>, T<sub>ratio</sub>)<br>"
+            "i<sub>q</sub><sup>*</sup> = interp_iq("
+            "&lambda;<sub>max</sub>, T<sub>ratio</sub>)"
+        )
+
         self.vl.addStretch()
 
 class SimHelpDialog(BaseHelpDialog):
     def __init__(self, parent=None):
         super().__init__("도움말 — 실시간 시뮬레이션", "#455A64", parent)
-        self.add_section("업데이트 중...")
-        self.add_body("시뮬레이션 관련 수식 및 상세 설명은 다음 업데이트에서 제공될 예정입니다.")
+
+        self.add_section("1. 시뮬레이션의 목적")
+        self.add_body(
+            "시뮬레이션 탭은 사용자가 설정한 회전속도 rpm과 토크 지령 Tref_cmd에 대해 "
+            "현재 운전점의 최적 전류 지령 id*, iq*를 계산하고, "
+            "전류 제한 영역, 자속 제한 영역, 토크 등고선 위에 운전점을 표시합니다."
+        )
+
+        self.add_section("2. 속도에 따른 자속 제한 계산")
+        self.add_body(
+            "먼저 현재 rpm에서 인버터 전압 한계로부터 허용 가능한 최대 자속 λmax를 계산합니다. "
+            "속도가 높아질수록 λmax는 작아지며, 이 값이 현재 운전점의 자속 제한으로 사용됩니다."
+        )
+        self.add_formula(
+            "V<sub>max</sub> = &alpha; &times; V<sub>dc</sub><br>"
+            "&omega;<sub>mech</sub> = rpm &times; 2&pi; / 60<br>"
+            "&omega;<sub>e</sub> = pole_pairs &times; &omega;<sub>mech</sub><br>"
+            "&lambda;<sub>max</sub> = V<sub>max</sub> / &omega;<sub>e</sub>"
+        )
+
+        self.add_section("3. 현재 자속 제한에서 가능한 최대토크")
+        self.add_body(
+            "계산된 λmax를 기준으로 Tmax_LUT를 보간하여 현재 속도에서 낼 수 있는 "
+            "최대토크 Tmax를 구합니다. 이 값은 토크 지령을 제한하는 기준이 됩니다."
+        )
+        self.add_formula(
+            "T<sub>max,current</sub> = interp("
+            "&lambda;<sub>max</sub>, Tmax_LUT)"
+        )
+
+        self.add_section("4. 정토크 모드")
+        self.add_body(
+            "정토크 모드에서는 사용자가 입력한 토크 지령 Tref_cmd를 사용합니다. "
+            "단, 현재 λmax에서 가능한 최대토크를 넘지 않도록 Tref를 제한합니다. "
+            "그 뒤 Tref를 Tmax로 나누어 LUT 입력값인 T_ratio를 계산합니다."
+        )
+        self.add_formula(
+            "T<sub>ref</sub> = clip("
+            "T<sub>ref_cmd</sub>, 0, 0.999 &times; T<sub>max,current</sub>)<br>"
+            "T<sub>ratio</sub> = T<sub>ref</sub> / T<sub>max,current</sub>"
+        )
+
+        self.add_section("5. LUT 보간으로 전류 지령 계산")
+        self.add_body(
+            "정토크 모드에서는 λmax와 T_ratio를 입력으로 사용하여 "
+            "Id_LUT_2D, Iq_LUT_2D를 보간합니다. "
+            "이렇게 얻은 값이 현재 운전점의 최적 전류 지령 id*, iq*입니다."
+        )
+        self.add_formula(
+            "i<sub>d</sub><sup>*</sup> = interp_id("
+            "&lambda;<sub>max</sub>, T<sub>ratio</sub>)<br>"
+            "i<sub>q</sub><sup>*</sup> = interp_iq("
+            "&lambda;<sub>max</sub>, T<sub>ratio</sub>)"
+        )
+
+        self.add_section("6. MTPA / MTPV 모드")
+        self.add_body(
+            "정토크 모드가 아닐 경우, 시뮬레이션은 항상 현재 λmax에서의 최대토크 운전점을 사용합니다. "
+            "이때 id*, iq*는 Id_at_Tmax, Iq_at_Tmax 데이터를 1차원 보간하여 계산합니다."
+        )
+        self.add_formula(
+            "T<sub>ref</sub> = T<sub>max,current</sub><br>"
+            "i<sub>d</sub><sup>*</sup> = interp("
+            "&lambda;<sub>max</sub>, Id_at_Tmax)<br>"
+            "i<sub>q</sub><sup>*</sup> = interp("
+            "&lambda;<sub>max</sub>, Iq_at_Tmax)"
+        )
+
+        self.add_section("7. 실제 토크 계산 및 표시")
+        self.add_body(
+            "계산된 id*, iq*를 다시 토크 식에 대입하여 실제 발생 토크 Te를 계산합니다. "
+            "결과창에는 id*, iq*, Te, λmax, Tmax가 표시됩니다."
+        )
+        self.add_formula(
+            "T<sub>e</sub> = 1.5 &times; pole_pairs &times; "
+            "[ &psi;<sub>f</sub> i<sub>q</sub><sup>*</sup> + "
+            "(L<sub>d</sub> - L<sub>q</sub>) "
+            "i<sub>d</sub><sup>*</sup> i<sub>q</sub><sup>*</sup> ]"
+        )
+
+        self.add_section("8. 그래프에서 표시되는 의미")
+        self.add_body(
+            "그래프에는 전류 제한 원, MTPA 궤적, 약자속/MTPV 궤적, "
+            "현재 자속 제한 영역, 토크 등고선, 그리고 현재 운전점이 함께 표시됩니다. "
+            "이를 통해 현재 지령이 전류 제한과 자속 제한 안에서 가능한 운전점인지 확인할 수 있습니다."
+        )
+
         self.vl.addStretch()
 
 class TmaxTab(QWidget):
@@ -533,8 +1051,8 @@ class TmaxTab(QWidget):
             f" border-radius:{_S(12)}px; }}"
         )
         val_main_ss = f"font-size:{_FS(18)}px; font-weight:bold; color:#1A237E; border:none;" 
-        val_unit_ss = f"font-size:{_FS(10.5)}px; font-weight:500; color:#607D8B; border:none;"
-        lbl_ss  = f"font-size:{_FS(9)}px; color:#546E7A; font-weight:bold; border:none; text-transform:uppercase; letter-spacing:0.5px;"
+        val_unit_ss = f"font-size:{_FS(11)}px; font-weight:500; color:#607D8B; border:none;"
+        lbl_ss  = f"font-size:{_FS(11)}px; color:#546E7A; font-weight:bold; border:none; text-transform:uppercase; letter-spacing:0.5px;"
 
         def make_card(title):
             w = QWidget()
@@ -725,6 +1243,11 @@ class LutTab(QWidget):
                 background: #FFFFFF; color: #546E7A; font-weight: bold;
                 border: 1px solid #CFD8DC;
             }}
+            QPushButton#segBtnLeft, QPushButton#segBtnRight {{
+                font-size: {_ui_font(11)}px;
+                padding-top: {_S(4)}px;
+                padding-bottom: {_S(4)}px;
+            }}
         """)
         
         for idx, b in enumerate([self.btn_3d, self.btn_tbl]):
@@ -732,6 +1255,10 @@ class LutTab(QWidget):
             b.setCursor(Qt.PointingHandCursor)
             b.setFixedHeight(_S(32))
             b.setFixedWidth(_S(150))
+            b.setFont(QFont("Inter", _ui_font(11), QFont.Bold))
+            b.setStyleSheet(
+                f"QPushButton {{ font-family: \"Inter\", \"Pretendard\", \"Noto Sans KR\", system-ui, sans-serif; font-weight: 700; font-size: {_ui_font(11)}px; }}"
+            )
             self.btn_group.addButton(b, idx)
             seg_layout.addWidget(b)
             
@@ -757,7 +1284,7 @@ class LutTab(QWidget):
         tl.setContentsMargins(0, 0, 0, 0)
         self.table = QTableWidget()
         self.table.setAlternatingRowColors(True)
-        self.table.setStyleSheet(f"font-size: {_FS(9)}px;")
+        self.table.setStyleSheet(f"font-size: {_ui_font(11)}px;")
         tl.addWidget(self.table)
         self.stack.addWidget(self.table_container)
         
@@ -773,7 +1300,7 @@ class LutTab(QWidget):
         
         btn_ss = (
             f"QPushButton {{ background:transparent; color:#1A237E; border:1px solid #1A237E;"
-            f" border-radius:{_S(6)}px; font-weight:bold; font-size:{_FS(10.5)}px; padding: {_S(6)}px {_S(14)}px; }}"
+            f" border-radius:{_S(6)}px; font-weight:bold; font-size:{_ui_font(11)}px; padding: {_S(5)}px {_S(12)}px; }}"
             "QPushButton:hover { background:#E8F0FE; }"
             "QPushButton:pressed { background:#D2E3FC; }"
         )
@@ -1036,27 +1563,23 @@ class SimTab(QWidget):
 
         # ---- controls (left of sim tab) ----
         ctrl = QWidget()
-        ctrl.setFixedWidth(_S(220))
+        ctrl.setFixedWidth(_S(260))
         vl = QVBoxLayout(ctrl)
-        vl.setContentsMargins(_S(6), _S(20), _S(6), _S(20))
+        # increase right margin to give breathing room on the control side
+        vl.setContentsMargins(_S(6), _S(20), _S(20), _S(20))
         vl.setSpacing(_S(16))
         
         vl.addStretch()
 
-        # 1) 동작점 결과 (상단 배치)
-        res_title = QLabel("동작점 결과")
-        res_title.setFont(QFont("Segoe UI", _FS(9), QFont.Bold))
-        res_title.setStyleSheet("color:#546E7A; margin-bottom:2px;")
-        vl.addWidget(res_title)
-
+        # 1) Operating Point (상단 배치)
         res_box = QWidget()
         res_box.setStyleSheet(f"""
-            QWidget {{ background: #F5F7FA; border: 1px solid #CFD8DC; border-radius: {_S(8)}px; }}
-            QLabel {{ background: transparent; border: none; font-size: {_FS(10.5)}px; }}
+            QWidget {{ background: #F7F7F7; border: 1px solid #BDBDBD; border-radius: {_S(10)}px; }}
+            QLabel {{ background: transparent; border: none; font-size: {_ui_font(11)}px; color: #111111; }}
         """)
         rl = QVBoxLayout(res_box)
-        rl.setContentsMargins(_S(12), _S(12), _S(12), _S(12))
-        rl.setSpacing(_S(8))
+        rl.setContentsMargins(_S(12), _S(11), _S(12), _S(11))
+        rl.setSpacing(_S(7))
 
         self.lbl_id_op  = QLabel("—")
         self.lbl_iq_op  = QLabel("—")
@@ -1067,11 +1590,11 @@ class SimTab(QWidget):
         def add_res_row(label, val_lbl):
             row = QHBoxLayout()
             lbl_name = QLabel(label)
-            lbl_name.setStyleSheet("color: #546E7A; font-weight: 500;")
+            lbl_name.setStyleSheet(f"color: #111111; font-size: {_ui_font(11)}px; font-weight: 700;")
             row.addWidget(lbl_name)
             row.addStretch()
-            val_lbl.setFont(QFont("Courier", _FS(11), QFont.Bold))
-            val_lbl.setStyleSheet("color:#1A237E;")
+            val_lbl.setFont(QFont("Consolas", _ui_font(11), QFont.Bold))
+            val_lbl.setStyleSheet("color:#111111;")
             row.addWidget(val_lbl)
             rl.addLayout(row)
 
@@ -1088,18 +1611,19 @@ class SimTab(QWidget):
         slider_row = QHBoxLayout()
         slider_row.setSpacing(_S(12))
 
-        # RPM Slider Group
-        grp_rpm = QGroupBox("RPM")
+        # RPM Slider Group (no title)
+        grp_rpm = QGroupBox()
+        grp_rpm.setStyleSheet(f"QGroupBox {{ color:#111111; font-size:{_ui_font(11)}px; font-weight:bold; border:1px solid #BDBDBD; border-radius:{_S(10)}px; }}")
         gl = QVBoxLayout(grp_rpm)
-        gl.setContentsMargins(_S(8), _S(10), _S(8), _S(10))
-        self.lbl_rpm = QLabel("3000\nrpm")
+        gl.setContentsMargins(_S(8), _S(8), _S(8), _S(8))
+        self.lbl_rpm = QLabel("3000\nSpeed")
         self.lbl_rpm.setAlignment(Qt.AlignCenter)
-        self.lbl_rpm.setStyleSheet(f"font-weight:bold; font-size:{_FS(10.5)}px; color:#1A237E;")
-        self.sl_rpm = QSlider(Qt.Vertical)
+        self.lbl_rpm.setStyleSheet(f"font-weight:bold; font-size:{_ui_font(11)}px; color:#111111;")
+        self.sl_rpm = CircularSlider(Qt.Vertical)
         self.sl_rpm.setRange(0, 6000)
         self.sl_rpm.setValue(3000)
-        self.sl_rpm.setFixedWidth(_S(34))  # 명시적 너비 확보
-        self.sl_rpm.setFixedHeight(_S(180))
+        self.sl_rpm.setFixedWidth(_S(42))  # 명시적 너비 확보
+        self.sl_rpm.setFixedHeight(_S(200))
         self.sl_rpm.setTickInterval(1000)
         self.sl_rpm.setTickPosition(QSlider.TicksLeft)
         self.sl_rpm.valueChanged.connect(self._on_change)
@@ -1108,18 +1632,19 @@ class SimTab(QWidget):
         gl.addWidget(self.sl_rpm, 0, Qt.AlignCenter)
         slider_row.addWidget(grp_rpm)
 
-        # Torque Slider Group
-        grp_t = QGroupBox("Torque")
+        # Torque Slider Group (no title)
+        grp_t = QGroupBox()
+        grp_t.setStyleSheet(f"QGroupBox {{ color:#111111; font-size:{_ui_font(11)}px; font-weight:bold; border:1px solid #BDBDBD; border-radius:{_S(10)}px; }}")
         gl2 = QVBoxLayout(grp_t)
-        gl2.setContentsMargins(_S(8), _S(10), _S(8), _S(10))
+        gl2.setContentsMargins(_S(8), _S(8), _S(8), _S(8))
         self.lbl_tref = QLabel("2.0\nNm")
         self.lbl_tref.setAlignment(Qt.AlignCenter)
-        self.lbl_tref.setStyleSheet(f"font-weight:bold; font-size:{_FS(10.5)}px; color:#1A237E;")
-        self.sl_tref = QSlider(Qt.Vertical)
+        self.lbl_tref.setStyleSheet(f"font-weight:bold; font-size:{_ui_font(11)}px; color:#111111;")
+        self.sl_tref = CircularSlider(Qt.Vertical)
         self.sl_tref.setRange(0, 500)
         self.sl_tref.setValue(20)
-        self.sl_tref.setFixedWidth(_S(34)) # 명시적 너비 확보
-        self.sl_tref.setFixedHeight(_S(180))
+        self.sl_tref.setFixedWidth(_S(42)) # 명시적 너비 확보
+        self.sl_tref.setFixedHeight(_S(200))
         self.sl_tref.setTickInterval(100)
         self.sl_tref.setTickPosition(QSlider.TicksRight)
         self.sl_tref.valueChanged.connect(self._on_change)
@@ -1128,46 +1653,12 @@ class SimTab(QWidget):
         gl2.addWidget(self.sl_tref, 0, Qt.AlignCenter)
         slider_row.addWidget(grp_t)
 
-        # 슬라이더 디자인 (상/하단 색상 방향 반전 보정)
-        slider_qss = f"""
-            QSlider:vertical {{
-                width: {_S(34)}px;
-            }}
-            QSlider::groove:vertical {{
-                background: #CFD8DC;
-                width: {_S(8)}px;
-                border-radius: {_S(4)}px;
-                margin: 0 {_S(12)}px;
-            }}
-            QSlider::handle:vertical {{
-                background: #1A237E;
-                height: {_S(16)}px;
-                width: {_S(24)}px;
-                margin: 0 {_S(-8)}px;
-                border-radius: {_S(4)}px;
-            }}
-            QSlider::sub-page:vertical {{
-                background: #CFD8DC;
-                border-radius: {_S(4)}px;
-                margin: 0 {_S(12)}px;
-                width: {_S(8)}px;
-            }}
-            QSlider::add-page:vertical {{
-                background: #1A237E;
-                border-radius: {_S(4)}px;
-                margin: 0 {_S(12)}px;
-                width: {_S(8)}px;
-            }}
-        """
-        self.sl_rpm.setStyleSheet(slider_qss)
-        self.sl_tref.setStyleSheet(slider_qss)
+        # Custom-painted sliders do not rely on the platform handle renderer.
 
         vl.addLayout(slider_row)
         vl.addStretch()
 
-        root.addWidget(ctrl)
-
-        # ---- plot (right of sim tab) ----
+        # ---- plot (left of sim tab) ----
         fig = Figure(tight_layout=False)
         self.ax = fig.add_axes([0.12, 0.10, 0.82, 0.82])
         self.canvas = MplCanvas(fig)
@@ -1176,6 +1667,7 @@ class SimTab(QWidget):
         self._dyn_artists = []
         self._ID_bg = self._IQ_bg = self._LAM_bg = self._TE_bg = None
         root.addWidget(self.canvas, stretch=1)
+        root.addWidget(ctrl)
 
     def _on_change(self):
         self.lbl_rpm.setText(f"{self.sl_rpm.value()}\nrpm")
@@ -1233,12 +1725,12 @@ class SimTab(QWidget):
         cf = self.ax.contourf(self._ID_bg, self._IQ_bg, I_bg,
                               levels=[0, p_["Imax"]], colors=['#AED6F1'], alpha=0.3)
         ct = self.ax.contour(self._ID_bg, self._IQ_bg, I_bg,
-                             levels=[p_["Imax"]], colors=['#2E86C1'], linewidths=1.5)
-        lm, = self.ax.plot(id_mtpa[v], iq_mtpa[v], 'orange', lw=1.8, label="MTPA")
+                     levels=[p_["Imax"]], colors=['#2E86C1'], linewidths=0.9)
+        lm, = self.ax.plot(id_mtpa[v], iq_mtpa[v], 'orange', lw=0.9, label="MTPA")
         # filter NaN from trajectory so the line is never cut off
         v_t = np.isfinite(Id_at_Tmax) & np.isfinite(Iq_at_Tmax)
         lt, = self.ax.plot(Id_at_Tmax[v_t], Iq_at_Tmax[v_t],
-                           'purple', lw=1.8, label="Optimal traj.")
+                           'purple', lw=0.9, label="Field-Weakening & MTPV")
 
         self.ax.set_xlabel(r"$i_d$ [A]")
         self.ax.set_ylabel(r"$i_q$ [A]")
@@ -1266,7 +1758,7 @@ class SimTab(QWidget):
         cf = self.ax.contourf(self._ID_bg, self._IQ_bg, self._LAM_bg,
                               levels=[0, lam_ref], colors=['#A9DFBF'], alpha=0.4)
         ct = self.ax.contour(self._ID_bg, self._IQ_bg, self._LAM_bg,
-                             levels=[lam_ref], colors=['#1E8449'], linewidths=1.5)
+                             levels=[lam_ref], colors=['#1E8449'], linewidths=0.9)
         self._dyn_artists.extend([cf, ct])
 
         if Tref_cmd > 0:
@@ -1308,9 +1800,9 @@ class ParamPanel(QWidget):
     def _section_label(self, text):
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            f"font-size:{_FS(9)}px; font-weight:bold; color:#FFFFFF;"
+            f"font-size:{_FS(11)}px; font-weight:normal; color:#FFFFFF;"
             f" background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1A237E, stop:1 transparent);"
-            f" letter-spacing:1px; padding:{_S(6)}px {_S(10)}px; border-radius:{_S(6)}px;"
+            f" letter-spacing:1px; padding:{_S(5)}px {_S(10)}px; border-radius:{_S(6)}px; margin-bottom:{_S(1)}px;"
         )
         return lbl
 
@@ -1318,18 +1810,20 @@ class ParamPanel(QWidget):
         """레이블(우측 정렬) + 보조설명 + 위젯 레이아웃 (툴팁 포함)"""
         row = QHBoxLayout()
         row.setSpacing(_S(8))
+        row.setContentsMargins(0, 0, 0, 0)
         
         # 레이블 뭉치 (VBox)
         lbl_vbox = QVBoxLayout()
         lbl_vbox.setSpacing(0)
+        lbl_vbox.setContentsMargins(0, 0, 0, 0)
         
         lbl = QLabel(label_text)
         lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        lbl.setStyleSheet(f"font-size:{_FS(10.5)}px; font-weight:bold; color:#263238;")
+        lbl.setStyleSheet(f"font-size:{_FS(11)}px; font-weight:bold; color:#263238;")
         
         sub = QLabel(sub_text)
         sub.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        sub.setStyleSheet(f"font-size:{_FS(8.5)}px; color:#607D8B;")
+        sub.setStyleSheet(f"font-size:{_FS(11)}px; color:#607D8B;")
         
         lbl_vbox.addWidget(lbl)
         lbl_vbox.addWidget(sub)
@@ -1374,13 +1868,13 @@ class ParamPanel(QWidget):
         field_ss = (
             f"QLineEdit {{ border:1px solid #CFD8DC; border-radius:{_S(6)}px;"
             f" padding:{_S(7)}px {_S(12)}px; background:#FFFFFF;"
-            f" font-size:{_FS(10.5)}px; color:#263238; }}"
+            f" font-size:{_FS(11)}px; color:#263238; }}"
             "QLineEdit:focus { border-color:#1A237E; background:#F8FAFF; border-width:1.5px; }"
         )
         combo_ss = (
             f"QComboBox {{ border:1px solid #CFD8DC; border-radius:{_S(6)}px;"
             f" padding:{_S(6)}px {_S(12)}px; background:#FFFFFF;"
-            f" font-size:{_FS(10.5)}px; color:#263238; }}"
+            f" font-size:{_FS(11)}px; color:#263238; }}"
             f"QComboBox::drop-down {{ border:none; width:{_S(22)}px; }}"
             "QComboBox:focus { border-color:#1A237E; border-width:1.5px; }"
         )
@@ -1459,7 +1953,7 @@ class ParamPanel(QWidget):
         self.btn_def = QPushButton("↺ Set to default")
         self.btn_def.setCursor(Qt.PointingHandCursor)
         self.btn_def.setStyleSheet(
-            f"QPushButton {{ background:transparent; color:#78909C; font-size:{_FS(9)}px; font-weight:bold; border:none; text-decoration:underline; }}"
+            f"QPushButton {{ background:transparent; color:#78909C; font-size:{_FS(11)}px; font-weight:bold; border:none; text-decoration:underline; }}"
             "QPushButton:hover { color:#1A237E; }"
         )
         self.btn_def.clicked.connect(self._on_default_clicked)
@@ -1468,9 +1962,10 @@ class ParamPanel(QWidget):
         
         self.btn = QPushButton("GENERATE LUT")
         self.btn.setFixedHeight(_S(48))
+        self.btn.setFont(QFont("NanumSquare", _ui_font(14), QFont.Bold))
         self.btn.setStyleSheet(
             f"QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1A237E, stop:1 #3949AB); color:#FFFFFF;"
-            f" border-radius:{_S(6)}px; font-weight:bold; font-size:{_FS(11.5)}px;"
+            f" border-radius:{_S(6)}px; font-weight:bold; font-size:{_FS(14)}px;"
             f" border:none; letter-spacing:1.5px; }}"
             "QPushButton:hover { background:#0D47A1; }"
             "QPushButton:pressed { background:#002171; padding-top: 3px; padding-left: 3px; }"
@@ -1551,12 +2046,12 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         self.setStyleSheet(f"""
-            * {{ font-family: "Segoe UI", "NanumSquare"; }}
+
             QMainWindow {{ background-color: #ECEFF1; }}
-            QLabel {{ font-size: {_FS(10.5)}px; color: #263238; }}
+            QLabel {{ font-size: {_ui_font(11)}px; color: #263238; }}
             QComboBox, QLineEdit {{
                 border: 1px solid #CFD8DC; border-radius: {_S(6)}px; padding: {_S(6)}px {_S(10)}px;
-                background-color: #FFFFFF; font-size: {_FS(10.5)}px; color: #263238;
+                background-color: #FFFFFF; font-size: {_ui_font(11)}px; color: #263238;
             }}
             QComboBox:hover, QLineEdit:hover {{ border-color: #B0BEC5; }}
             QComboBox:focus, QLineEdit:focus {{ border-color: #1A237E; background-color: #FFFFFF; }}
@@ -1574,9 +2069,9 @@ class MainWindow(QMainWindow):
                 border-bottom: none;
                 border-top-left-radius: {_S(8)}px;
                 border-top-right-radius: {_S(8)}px;
-                padding: {_S(5)}px {_S(18)}px;
-                min-width: {_S(90)}px;
-                font-size: {_FS(9)}px;
+                padding: {_S(4)}px {_S(14)}px;
+                min-width: {_S(78)}px;
+                font-size: {_ui_font(11)}px;
                 color: #546E7A;
                 font-weight: bold;
                 letter-spacing: 0.5px;
@@ -1590,7 +2085,7 @@ class MainWindow(QMainWindow):
                 border: 1px solid #CFD8DC;
                 border-bottom: 2px solid white;
                 margin-top: 0px;
-                padding-bottom: {_S(8)}px;
+                padding-bottom: {_S(6)}px;
             }}
             QTabBar::tab:hover:!selected {{ 
                 background: #B0BEC5; 
@@ -1616,13 +2111,19 @@ class MainWindow(QMainWindow):
         self.tabs.setTabPosition(QTabWidget.North)
         self.tabs.setEnabled(False)   # disabled until LUT built
 
-        btn_help = QPushButton("❓ 설명")
+        btn_help = QPushButton("?")
         btn_help.setCursor(Qt.PointingHandCursor)
-        btn_help.setFixedHeight(_S(26))
+        btn_help.setFixedSize(_S(44), _S(44))
+        btn_help.setMinimumSize(_S(44), _S(44))
+        btn_help.setMaximumSize(_S(44), _S(44))
         btn_help.setStyleSheet(
-            f"QPushButton {{ background:#1A237E; color:white; border-radius:{_S(13)}px;"
-            f" font-size:{_FS(10)}px; padding: 0 {_S(16)}px; margin-right: {_S(10)}px; margin-bottom: {_S(6)}px; border:none; font-weight:bold; }}"
-            "QPushButton:hover { background:#3949AB; }"
+            f"QPushButton {{"
+            f" background: #111111; color:white; border-radius:{_S(22)}px;"
+            f" min-width:{_S(44)}px; max-width:{_S(44)}px; min-height:{_S(44)}px; max-height:{_S(44)}px;"
+            f" font-size:{_FS(16)}px; padding: 0px; margin: 0px;"
+            f" border: 1px solid #111111; font-weight:bold; }}"
+            "QPushButton:hover { background: #333333; }"
+            "QPushButton:pressed { background: #000000; }"
         )
         btn_help.clicked.connect(self._show_help)
         self.tabs.setCornerWidget(btn_help, Qt.TopRightCorner)
@@ -1793,12 +2294,28 @@ class MainWindow(QMainWindow):
             ("#455A64", "#607D8B"), # Slate
         ]
         color, hover = themes[index] if index < len(themes) else themes[0]
+        HELP_SIZE = _S(30)
+        HELP_RADIUS = _S(15)
+
+        self.btn_help.setFixedSize(HELP_SIZE, HELP_SIZE)
+        self.btn_help.setMinimumSize(HELP_SIZE, HELP_SIZE)
+        self.btn_help.setMaximumSize(HELP_SIZE, HELP_SIZE)
+
         self.btn_help.setStyleSheet(
-            f"QPushButton {{ background:{color}; color:white; border-radius:{_S(13)}px;"
-            f" font-size:{_FS(10)}px; padding: 0 {_S(16)}px; margin-right: {_S(10)}px; margin-bottom: {_S(6)}px; border:none; font-weight:bold; }}"
+            f"QPushButton {{"
+            f" background:{color}; color:white;"
+            f" border-radius:{HELP_RADIUS}px;"
+            f" min-width:{HELP_SIZE}px; max-width:{HELP_SIZE}px;"
+            f" min-height:{HELP_SIZE}px; max-height:{HELP_SIZE}px;"
+            f" font-size:{_FS(16)}px;"
+            f" padding: 0px;"
+            f" margin-right:{_S(10)}px;"
+            f" margin-bottom:{_S(4)}px;"
+            f" border:none;"
+            f" font-weight:bold;"
+            f" }}"
             f"QPushButton:hover {{ background:{hover}; }}"
         )
-
     def _show_help(self):
         idx = self.tabs.currentIndex()
         if idx == 0:
@@ -1823,13 +2340,91 @@ def main():
     _DPI_SCALE = max(0.75, min(logical_dpi / 96.0, 3.0)) * 1.15  # 전체 크기 15% 확대
 
     app.setStyle("Fusion")
-    
-    # 영문 Segoe UI, 한글 NanumSquare 조합을 위해 폰트 설정 최적화
-    # QFontInfo를 통한 체크보다 스타일시트 우선순위 활용
-    app.setFont(QFont("Segoe UI", _FS(10)))
-    QFont.insertSubstitution("Segoe UI", "NanumSquare")
+
+    # 기본 앱 폰트 (영문 우선: Inter) — Pretendard/Noto Sans KR will act as Hangul fallbacks
+    app.setFont(QFont("Inter", _ui_font(11)))
+
+    # Global font-family stack (applies to QWidget equivalents: body, buttons, inputs, textareas, selects)
+    app.setStyleSheet(
+        """
+        QWidget, QLabel, QPushButton, QLineEdit, QTextEdit, QPlainTextEdit,
+        QComboBox, QTableWidget, QMenu, QMenuBar, QStatusBar {
+            font-family: "Inter", "Pretendard", "Noto Sans KR", system-ui, sans-serif;
+        }
+        """
+    )
+
+    # 시도: resources/fonts 폴더에서 Nanum 계열 TTF를 로드
+    nanum_family = None
+    fonts_dir = os.path.join(os.path.dirname(__file__), "resources", "fonts")
+    loaded_families = []
+    if os.path.isdir(fonts_dir):
+        ttfs = [f for f in os.listdir(fonts_dir) if f.lower().endswith('.ttf')]
+        print(f"DEBUG: fonts_dir={fonts_dir}, ttf_files={ttfs}")
+        for fname in ttfs:
+            fpath = os.path.join(fonts_dir, fname)
+            try:
+                fid = QFontDatabase.addApplicationFont(fpath)
+                if fid >= 0:
+                    fams = QFontDatabase.applicationFontFamilies(fid)
+                    print(f"DEBUG: loaded font {fpath} -> families={fams}")
+                    for f in fams:
+                        loaded_families.append(f)
+            except Exception as e:
+                print(f"DEBUG: failed to load font {fpath}: {e}")
+                continue
+    # choose a preferred family from loaded families (prefer base 'NanumSquare')
+    if loaded_families:
+        pref = None
+        for f in loaded_families:
+            if f.lower() == 'nanumsquare':
+                pref = f
+                break
+        if not pref:
+            # pick first family that contains 'nanum' and does not contain 'bold' or 'eb' markers
+            for f in loaded_families:
+                fl = f.lower()
+                if 'nanum' in fl and ('bold' not in fl and 'eb' not in fl and 'b' not in fl):
+                    pref = f
+                    break
+        if not pref:
+            pref = loaded_families[0]
+        nanum_family = pref
+
+    global _NANUM_FAMILY, _NANUM_BOLD_FAMILY
+    _NANUM_FAMILY = nanum_family
+    _NANUM_BOLD_FAMILY = next((f for f in loaded_families if 'bold' in f.lower()), nanum_family)
+
+    # Keep the app-wide Latin/English font unchanged.
+    # Korean text is handled selectively on individual widgets.
+
+    # If no bundled font found, try to find a system-installed Nanum-family font
+    if not nanum_family:
+        try:
+            fams = QFontDatabase().families()
+            candidates = ['NanumSquare', 'NanumGothic', '나눔스퀘어', 'Nanum Brush Script']
+            for c in candidates:
+                if c in fams:
+                    nanum_family = c
+                    break
+            # last resort: find any family name that contains 'nanum' (case-insensitive)
+            if not nanum_family:
+                for f in fams:
+                    if 'nanum' in f.lower():
+                        nanum_family = f
+                        break
+        except Exception:
+            nanum_family = None
 
     win = MainWindow()
+    # 적용: 로드한 Nanum 계열 폰트가 있으면 UI 트리를 순회해 한글 부분만 래핑/적용
+    if nanum_family:
+        try:
+            print(f"DEBUG: scheduling application of nanum_family={nanum_family} after event loop start")
+            # small delay to allow widgets to finish initialization and set dynamic texts
+            QTimer.singleShot(100, lambda: (print(f"DEBUG: applying nanum_family={nanum_family} to UI"), apply_fonts_recursively(win, nanum_family), print(f"DEBUG: korean_changes={globals().get('_korean_changes', 0)}, scanned={globals().get('_scan_widgets',0)}, korean_widgets={globals().get('_korean_widgets',0)}"), print(f"DEBUG: samples={globals().get('_korean_samples',[]) }")))
+        except Exception:
+            pass
     win.show()
     sys.exit(app.exec_())
 
