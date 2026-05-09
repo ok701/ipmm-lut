@@ -14,6 +14,8 @@ matplotlib.rcParams['figure.autolayout'] = False
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
+from PyQt5.QtGui import QIcon
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton, QFormLayout,
@@ -1551,6 +1553,7 @@ class LutTab(QWidget):
 class SimTab(QWidget):
     """시뮬레이션 탭"""
     sim_changed = pyqtSignal()
+    _TREF_STEP_NM = 0.1
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1678,7 +1681,21 @@ class SimTab(QWidget):
         return float(self.sl_rpm.value())
 
     def get_tref(self):
-        return self.sl_tref.value() * 0.1
+        return self.sl_tref.value() * self._TREF_STEP_NM
+
+    def set_max_tref(self, tref_max_nm):
+        """Update the torque reference slider range in Nm."""
+        tref_max_nm = max(0.0, float(tref_max_nm))
+        max_steps = max(1, int(round(tref_max_nm / self._TREF_STEP_NM)))
+        was_blocked = self.sl_tref.blockSignals(True)
+        try:
+            self.sl_tref.setRange(0, max_steps)
+            self.sl_tref.setTickInterval(max(1, max_steps // 6))
+            if self.sl_tref.value() > max_steps:
+                self.sl_tref.setValue(max_steps)
+        finally:
+            self.sl_tref.blockSignals(was_blocked)
+        self.lbl_tref.setText(f"{self.sl_tref.value() * self._TREF_STEP_NM:.1f}\nNm")
 
     def set_max_rpm(self, rpm_max):
         """Update RPM slider range based on ParamPanel settings."""
@@ -2033,7 +2050,8 @@ class ParamPanel(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IPMM LUT 툴")
+        self.setWindowTitle("IPMM LUT Generator")
+        self.setWindowIcon(QIcon("icon.ico"))
         self.resize(_S(1200), _S(740))
 
         self.p_  = {"pole_pairs": 4, "Ld": 0.004, "Lq": 0.008,
@@ -2197,6 +2215,9 @@ class MainWindow(QMainWindow):
                                  data["Id_LUT_2D"], data["Iq_LUT_2D"], p_=self.p_, Vdc=self.Vdc)
         self.sim_tab.init_bg(self.p_, data["Id_at_Tmax"], data["Iq_at_Tmax"])
         self.sim_tab.set_max_rpm(self.p_["rpm_max"])
+        finite_tmax = np.isfinite(data["Tmax_LUT"])
+        if finite_tmax.any():
+            self.sim_tab.set_max_tref(float(np.nanmax(data["Tmax_LUT"][finite_tmax])) * 2.0)
         self._refresh_sim()
 
     def _on_lut_imported(self, data):
@@ -2239,6 +2260,9 @@ class MainWindow(QMainWindow):
         self.lut_tab.update_plot(lam_grid, Tratio_grid, Id_2D, Iq_2D, p_=self.p_, Vdc=self.Vdc)
         self.sim_tab.init_bg(self.p_, Id_at_Tmax, Iq_at_Tmax)
         self.sim_tab.set_max_rpm(self.p_["rpm_max"])
+        finite_tmax = np.isfinite(Tmax_LUT)
+        if finite_tmax.any():
+            self.sim_tab.set_max_tref(float(np.nanmax(Tmax_LUT[finite_tmax])) * 2.0)
         self._refresh_sim()
 
     def _on_mode_changed(self):
