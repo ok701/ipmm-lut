@@ -1,40 +1,34 @@
-# Build & Distribution
+# Build artifacts
 dist/
 build/
-bin/
-obj/
-*.spec
 *.exe
 
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 .venv/
-env/
 venv/
-ENV/
 
-# Web Frontend (Node.js)
+# Web (Node.js)
 node_modules/
 web/frontend/dist/
-web/frontend/dist-ssr/
 *.local
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
-# IDE & Editor
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# IDEs
 .vscode/
 .idea/
 .DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
 
-# Misc
-misc/
-temp/
+# Data results (Prevent large generated JSONs from being committed)
+*.json
+!package.json
+!package-lock.json
+
+# Temporary files
+*.log
 tmp/
+temp/
