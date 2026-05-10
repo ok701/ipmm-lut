@@ -57,160 +57,8 @@ def _ui_font(pt: int) -> int:
 
 
 # -------------------------
-# Korean font helpers
+# UI helpers
 # -------------------------
-_korean_changes = 0
-_scan_widgets = 0
-_korean_widgets = 0
-_korean_samples = []
-_NANUM_FAMILY = None
-_NANUM_BOLD_FAMILY = None
-
-def is_korean(text: str) -> bool:
-    if not text:
-        return False
-    return bool(re.search(r"[\uac00-\ud7a3]", text))
-
-
-def is_pure_korean_text(text: str) -> bool:
-    if not text:
-        return False
-    stripped = re.sub(r"[\s\d\W_]+", "", text)
-    if not stripped:
-        return False
-    return bool(re.fullmatch(r"[\uac00-\ud7a3]+", stripped))
-
-
-def apply_korean_font(widget, family: str):
-    """Apply a Korean-capable font to the widget without changing its text."""
-    try:
-        f = widget.font()
-        f.setFamily(family)
-        widget.setFont(f)
-    except Exception:
-        pass
-
-
-def apply_fonts_recursively(widget, nanum_family: str):
-    """Recursively apply selective Korean font wrapping to supported widgets.
-
-    Strategy:
-    - For widgets containing Korean text, set their font family to Nanum without changing the displayed text.
-    - This avoids HTML span tags leaking into the UI.
-    """
-    from PyQt5.QtWidgets import QLabel, QPushButton, QCheckBox, QRadioButton, QGroupBox, QLineEdit, QTabWidget
-    from PyQt5.QtWidgets import QAction
-    # initialize debug counters
-    try:
-        globals()['_scan_widgets']
-    except KeyError:
-        globals()['_scan_widgets'] = 0
-    try:
-        globals()['_korean_widgets']
-    except KeyError:
-        globals()['_korean_widgets'] = 0
-    try:
-        globals()['_korean_samples']
-    except KeyError:
-        globals()['_korean_samples'] = []
-
-    # handle common text properties
-    try:
-        # QLabel
-        if isinstance(widget, QLabel):
-            txt = widget.text()
-            globals()['_scan_widgets'] += 1
-            if is_pure_korean_text(txt):
-                globals()['_korean_widgets'] += 1
-                if len(globals()['_korean_samples']) < 10:
-                    globals()['_korean_samples'].append((widget.__class__.__name__, txt))
-                apply_korean_font(widget, nanum_family)
-        # QPushButton, QCheckBox, QRadioButton, QGroupBox
-        elif isinstance(widget, (QPushButton, QCheckBox, QRadioButton, QGroupBox)):
-            if hasattr(widget, 'text'):
-                txt = widget.text()
-                globals()['_scan_widgets'] += 1
-                if is_pure_korean_text(txt):
-                    globals()['_korean_widgets'] += 1
-                    if len(globals()['_korean_samples']) < 10:
-                        globals()['_korean_samples'].append((widget.__class__.__name__, txt))
-                    apply_korean_font(widget, nanum_family)
-        # QLineEdit placeholder
-        elif isinstance(widget, QLineEdit):
-            ph = widget.placeholderText()
-            globals()['_scan_widgets'] += 1
-            if is_pure_korean_text(ph):
-                globals()['_korean_widgets'] += 1
-                if len(globals()['_korean_samples']) < 10:
-                    globals()['_korean_samples'].append((widget.__class__.__name__, ph))
-                apply_korean_font(widget, nanum_family)
-        # QTabWidget tabs
-        elif isinstance(widget, QTabWidget):
-            for i in range(widget.count()):
-                t = widget.tabText(i)
-                globals()['_scan_widgets'] += 1
-                if is_pure_korean_text(t):
-                    globals()['_korean_widgets'] += 1
-                    if len(globals()['_korean_samples']) < 10:
-                        globals()['_korean_samples'].append(("Tab", t))
-                    apply_korean_font(widget.tabBar(), nanum_family)
-        # QAction (menus, toolbar)
-        if hasattr(widget, 'actions'):
-            for act in widget.actions():
-                if act is None:
-                    continue
-                atext = act.text()
-                globals()['_scan_widgets'] += 1
-                if is_pure_korean_text(atext):
-                    globals()['_korean_widgets'] += 1
-                    if len(globals()['_korean_samples']) < 10:
-                        globals()['_korean_samples'].append(("QAction", atext))
-                    try:
-                        f = act.font()
-                        f.setFamily(nanum_family)
-                        act.setFont(f)
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-
-    # Tooltips and other properties
-    try:
-        tt = widget.toolTip()
-        if is_korean(tt):
-            apply_korean_font(widget, nanum_family)
-    except Exception:
-        pass
-
-    # Recurse
-    # Special-case: QTableWidget contents (QTableWidgetItem are not QWidget)
-    try:
-        from PyQt5.QtWidgets import QTableWidget
-        if isinstance(widget, QTableWidget):
-            rows = widget.rowCount()
-            cols = widget.columnCount()
-            for r in range(rows):
-                for c in range(cols):
-                    item = widget.item(r, c)
-                    if item is None:
-                        continue
-                    txt = item.text()
-                    globals()['_scan_widgets'] += 1
-                    if is_korean(txt):
-                        globals()['_korean_widgets'] += 1
-                        if len(globals()['_korean_samples']) < 10:
-                            globals()['_korean_samples'].append(("QTableWidgetItem", txt))
-                        try:
-                            f = item.font()
-                            f.setFamily(nanum_family)
-                            item.setFont(f)
-                        except Exception:
-                            pass
-    except Exception:
-        pass
-
-    for child in widget.findChildren(QWidget):
-        apply_fonts_recursively(child, nanum_family)
 
 
 # =========================
@@ -495,7 +343,7 @@ class TabOverlay(QWidget):
         self.label = QLabel()
         self.label.setAlignment(Qt.AlignCenter)
         self.label.setWordWrap(True)
-        self.label.setFont(QFont("NanumSquare", _ui_font(14), QFont.Bold))
+        self.label.setFont(QFont("", _ui_font(14), QFont.Bold))
         self.label.setStyleSheet(
             f"font-size: {_FS(14)}px; font-weight: bold; color: #1A237E; line-height: 1.5;"
         )
@@ -539,7 +387,7 @@ class TabOverlay(QWidget):
         # Percentage label
         self.pct_lbl = QLabel("0%")
         self.pct_lbl.setAlignment(Qt.AlignCenter)
-        self.pct_lbl.setFont(QFont("NanumSquare", _ui_font(11), QFont.Bold))
+        self.pct_lbl.setFont(QFont("", _ui_font(11), QFont.Bold))
         self.pct_lbl.setStyleSheet(
             f"font-size: {_FS(11)}px; font-weight: bold; color: #1A237E;"
         )
@@ -1979,7 +1827,7 @@ class ParamPanel(QWidget):
         
         self.btn = QPushButton("GENERATE LUT")
         self.btn.setFixedHeight(_S(48))
-        self.btn.setFont(QFont("NanumSquare", _ui_font(14), QFont.Bold))
+        self.btn.setFont(QFont("", _ui_font(14), QFont.Bold))
         self.btn.setStyleSheet(
             f"QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1A237E, stop:1 #3949AB); color:#FFFFFF;"
             f" border-radius:{_S(6)}px; font-weight:bold; font-size:{_FS(14)}px;"
@@ -2378,77 +2226,7 @@ def main():
         """
     )
 
-    # 시도: resources/fonts 폴더에서 Nanum 계열 TTF를 로드
-    nanum_family = None
-    fonts_dir = os.path.join(os.path.dirname(__file__), "resources", "fonts")
-    loaded_families = []
-    if os.path.isdir(fonts_dir):
-        ttfs = [f for f in os.listdir(fonts_dir) if f.lower().endswith('.ttf')]
-        print(f"DEBUG: fonts_dir={fonts_dir}, ttf_files={ttfs}")
-        for fname in ttfs:
-            fpath = os.path.join(fonts_dir, fname)
-            try:
-                fid = QFontDatabase.addApplicationFont(fpath)
-                if fid >= 0:
-                    fams = QFontDatabase.applicationFontFamilies(fid)
-                    print(f"DEBUG: loaded font {fpath} -> families={fams}")
-                    for f in fams:
-                        loaded_families.append(f)
-            except Exception as e:
-                print(f"DEBUG: failed to load font {fpath}: {e}")
-                continue
-    # choose a preferred family from loaded families (prefer base 'NanumSquare')
-    if loaded_families:
-        pref = None
-        for f in loaded_families:
-            if f.lower() == 'nanumsquare':
-                pref = f
-                break
-        if not pref:
-            # pick first family that contains 'nanum' and does not contain 'bold' or 'eb' markers
-            for f in loaded_families:
-                fl = f.lower()
-                if 'nanum' in fl and ('bold' not in fl and 'eb' not in fl and 'b' not in fl):
-                    pref = f
-                    break
-        if not pref:
-            pref = loaded_families[0]
-        nanum_family = pref
-
-    global _NANUM_FAMILY, _NANUM_BOLD_FAMILY
-    _NANUM_FAMILY = nanum_family
-    _NANUM_BOLD_FAMILY = next((f for f in loaded_families if 'bold' in f.lower()), nanum_family)
-
-    # Keep the app-wide Latin/English font unchanged.
-    # Korean text is handled selectively on individual widgets.
-
-    # If no bundled font found, try to find a system-installed Nanum-family font
-    if not nanum_family:
-        try:
-            fams = QFontDatabase().families()
-            candidates = ['NanumSquare', 'NanumGothic', '나눔스퀘어', 'Nanum Brush Script']
-            for c in candidates:
-                if c in fams:
-                    nanum_family = c
-                    break
-            # last resort: find any family name that contains 'nanum' (case-insensitive)
-            if not nanum_family:
-                for f in fams:
-                    if 'nanum' in f.lower():
-                        nanum_family = f
-                        break
-        except Exception:
-            nanum_family = None
-
     win = MainWindow()
-    # 적용: 로드한 Nanum 계열 폰트가 있으면 UI 트리를 순회해 한글 부분만 래핑/적용
-    if nanum_family:
-        try:
-            print(f"DEBUG: scheduling application of nanum_family={nanum_family} after event loop start")
-            # small delay to allow widgets to finish initialization and set dynamic texts
-            QTimer.singleShot(100, lambda: (print(f"DEBUG: applying nanum_family={nanum_family} to UI"), apply_fonts_recursively(win, nanum_family), print(f"DEBUG: korean_changes={globals().get('_korean_changes', 0)}, scanned={globals().get('_scan_widgets',0)}, korean_widgets={globals().get('_korean_widgets',0)}"), print(f"DEBUG: samples={globals().get('_korean_samples',[]) }")))
-        except Exception:
-            pass
     win.show()
     sys.exit(app.exec_())
 
