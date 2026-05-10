@@ -1,152 +1,64 @@
-# IPMSM 최적 전류(MTPA / Field Weakening) 궤적 및 제어 시각화
+﻿# IPMSM Motor LUT Tool
 
-IPMSM(Interior Permanent Magnet Synchronous Motor)에서 최적의 운전을 위한 전류 지령 $i_d^*, i_q^*$ 궤적을 탐색하고, 그 결과를 2D LUT(Look-Up Table)로 계산·시각화하는 인터랙티브 툴입니다.
+An interactive tool for exploring optimal operation trajectories (MTPA, Field Weakening) and generating control Look-Up Tables (LUT) for IPMSM (Interior Permanent Magnet Synchronous Motors).
 
+This project provides two interfaces: a **Desktop GUI** and a **Web Dashboard**.
 
+## 1. Setup
 
-## 1. 배경: IPMSM과 d-q 좌표계
+Python 3.9+ is required. Choose one of the following installation methods.
 
-IPMSM은 로터 내부에 영구자석이 매립된 동기모터로, 전기차 구동 모터와 산업용 서보 드라이브 등에 널리 쓰입니다.
-3상 교류로 구동하지만, 제어의 편의를 위해 회전 로터 기준 동기 좌표계(d-q 좌표계)로 변환한 뒤 **직류값 두 개**로 전류를 표현합니다.
+### Option A: Conda (Recommended)
+Install all dependencies using the provided `environment.yml` file.
+`ash
+conda env create -f environment.yml
+conda activate ipmm_lut
+`
 
-| 제어량 | 역할 |
-| :---: | :--- |
-| $i_d$ (d축 전류) | 자속을 제어하는 성분. 음수를 인가하면 자속을 약화시킵니다. |
-| $i_q$ (q축 전류) | 토크를 발생시키는 주 성분. |
+### Option B: pip & venv
+Install dependencies using the `requirements.txt` file.
+`ash
+# Create and activate virtual environment (optional)
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-제어기의 핵심 임무는 **목표 토크를 달성하는 $(i_d, i_q)$ 조합 중 가장 전류가 작은 점을 찾는 것**입니다.
-
-
-
-## 2. 모터 수학 모델
-
-### 2.1 자속 쇄교 (Flux Linkage)
-
-$$
-\lambda_d = \psi_f + L_d \cdot i_d, \qquad \lambda_q = L_q \cdot i_q
-$$
-
-$$
-|\lambda| = \sqrt{\lambda_d^2 + \lambda_q^2}
-$$
-
-- $\psi_f$: 영구자석이 만드는 기본 쇄교 자속 (고정값)
-- $L_d,\, L_q$: d/q축 인덕턴스. **IPMSM은 $L_d < L_q$** (돌극성, Saliency)
-
-### 2.2 토크 방정식
-
-$$
-T_e = \frac{3}{2} P \left[ \psi_f i_q + (L_d - L_q) i_d i_q \right]
-$$
-
-첫 번째 항은 **마그네틱 토크**, 두 번째 항은 **릴럭턴스 토크**입니다.
-
-IPMSM은 $L_d < L_q$ 이므로 $(L_d - L_q) < 0$입니다.
-MTPA·약자속 운전 시 $i_d < 0$을 인가하면 릴럭턴스 토크 항 $(L_d - L_q)\cdot i_d \cdot i_q$이 **양수**가 되어, 같은 전류 크기에서도 토크 출력이 증가합니다.
-
-### 2.3 물리적 제약
-
-#### 전류 한계 (원)
-$$
-i_d^2 + i_q^2 \le I_{max}^2
-$$
-
-#### 전압·속도에 의한 자속 한계 (타원)
-
-인버터가 낼 수 있는 최대 교류 전압은 $V_{max} = \alpha \cdot V_{dc}$로 제한됩니다.  
-속도가 높아질수록 유도 기전력이 커지므로, 허용 자속의 상한이 줄어듭니다.
-
-$$
-|\lambda| \le \lambda_{max} = \frac{V_{max}}{\omega_e}, \qquad \omega_e = P \cdot \frac{2\pi \cdot \mathrm{rpm}}{60}
-$$
+# Install dependencies
+pip install -r requirements.txt
+`
 
 
+## 2. Desktop Version (PyQt5 GUI)
 
-## 3. MTPA — 최소 전류로 최대 토크
+The Desktop version offers a high-performance GUI for offline physics calculations and interactive visualization.
 
-저·중속에서는 자속 타원 제약이 여유롭기 때문에, 오직 **단위 전류 당 최대 토크(MTPA)**를 목표로 합니다.  
-이 조건의 닫힌 해는 다음과 같습니다.
-
-$$
-i_{d}^{\mathrm{MTPA}} = \frac{\psi_f - \sqrt{\psi_f^2 + 8(L_q - L_d)^2 I^2}}{4(L_q - L_d)}
-$$
-
-그래프의 **주황색 실선**이 다양한 전류 크기 $I$에 따른 MTPA 궤적입니다.
+### How to Run
+`ash
+python run_desktop.py
+`
+- **Key Features**: Real-time parameter tuning, high-resolution graph rendering, and LUT data export.
 
 
+## 3. Web Version (Dashboard)
 
-## 4. 약자속 제어 (Field Weakening)
+The Web version consists of a FastAPI backend and a React frontend, providing a modern dashboard interface.
 
-rpm이 상승하면 $\lambda_{max} = V_{max}/\omega_e$ 가 줄어들어, d-q 평면의 **자속 타원이 수축**합니다.  
-MTPA 동작점이 타원 바깥으로 밀려나면 더 이상 도달할 수 없게 되므로, $i_d$를 더 강한 음수 방향으로 밀어 전체 자속 $|\lambda|$를 강제로 줄입니다.  
-이를 **약자속 제어**라고 하며, 그래프에서 동작점이 자속 타원의 경계를 따라 좌측으로 이동하는 것으로 나타납니다.
+### 3.1 Backend Server
+The backend handles the motor physics calculation API.
+`ash
+python run_web.py
+`
+- Server runs on `http://localhost:8000` by default.
 
-
-
-## 5. 최적화 문제 정식화
-
-LUT의 각 격자점에서 풀어야 하는 최적화 문제는 다음과 같습니다.
-
-### 목적함수 (Cost) — 동손 최소화
-
-$$
-\min_{i_d,\, i_q} \quad J = i_d^2 + i_q^2
-$$
-
-전류의 제곱합이 동손(구리 손실)에 비례하므로, 이를 최소화하면 효율이 최대가 됩니다.
-
-### 등식 제약 (Equality Constraint) — 동토크선
-
-$$
-T_e(i_d, i_q) = T_{ref}
-$$
-
-목표 토크를 **정확히** 달성해야 합니다. 이 등식이 d-q 평면에서 **등토크 곡선(isoline)**을 정의합니다.  
-그래프의 **빨간 실선**이 이 등토크선이며, 최적 동작점 $\bullet$ 은 그 위에 놓입니다.
-
-### 부등식 제약 (Inequality Constraints)
-
-$$
-i_d^2 + i_q^2 \le I_{max}^2 \qquad \text{(전류 한계)}
-$$
-$$
-|\lambda(i_d, i_q)| \le \lambda_{max} \qquad \text{(자속 한계)}
-$$
-
-결국, **등토크선과 두 불등식 바운더리가 교차하는 영역(Feasible Set) 위에서 전류 크기가 최소인 점**을 찾는 것이 이 문제의 본질입니다.
-
-> 코드에서는 `scipy.optimize.minimize` (SLSQP)로 이 문제를 풀며, 다양한 초기값에서 반복 탐색하여 전역 최적해를 보장합니다.
+### 3.2 Frontend UI
+The frontend provides a responsive dashboard. (Node.js required)
+`ash
+cd web/frontend
+npm install   # Run once
+npm run dev   # Start development server
+`
+- Open the local URL (typically `http://localhost:5173`) in your browser.
 
 
+## 4. Documentation
 
-## 6. LUT 생성 절차
-
-실시간 MCU에서 위 최적화를 매 제어 주기마다 실행하는 것은 현실적으로 불가능합니다.  
-따라서 오프라인에서 미리 계산한 결과를 **LUT**로 저장해 두고, 실시간에서는 보간만 수행합니다.
-
-**LUT 축 설계:**
-
-| 입력 | 의미 |
-| :---: | :--- |
-| $\lambda_{max}$ | 현재 속도·전압에서의 허용 자속 상한 |
-| $T_\mathrm{ratio} = T_{ref}/T_{max}$ | 해당 $\lambda_{max}$ 조건에서의 토크 정규화 비율 (0 ~ 1) |
-
-| 출력 | 의미 |
-| :---: | :--- |
-| $i_d^*$ | 최적 d축 전류 지령 |
-| $i_q^*$ | 최적 q축 전류 지령 |
-
-$T_\mathrm{ratio}$로 정규화하는 이유는, $\lambda_{max}$ 값마다 최대 토크 스케일이 달라도 **보간 격자가 항상 균일하게 분포**되어 보간 품질이 유지되기 때문입니다.
-
-
-
-## 7. 주요 파라미터
-
-| 파라미터 | 단위 | 설명 |
-| :---: | :---: | :--- |
-| `Vdc` | V | DC-Link 전압 |
-| `Imax` | A | 최대 허용 상전류 (피크) |
-| `psi_f` ($\psi_f$) | Wb | 영구자석 쇄교 자속 |
-| `Ld`, `Lq` | H | d/q축 인덕턴스 (IPMSM: $L_q > L_d$) |
-| `Pole Pairs` ($P$) | — | 극쌍수 |
-| `alpha` ($\alpha$) | — | 전압 이용률 (기본값 $1/3$) |
+- **[Algorithm Guide (ALGORITHM.md)](docs/ALGORITHM.md)**: Detailed explanation of motor control formulas and optimization techniques.

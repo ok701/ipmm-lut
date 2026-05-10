@@ -1,0 +1,8 @@
+numpy
+pandas
+scipy
+matplotlib
+PyQt5
+fastapi
+uvicorn
+pydantic
